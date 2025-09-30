@@ -1,0 +1,351 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>MAUI XAML Preview</title>
+  <style>
+    :root {
+      color-scheme: light;
+      font-family: -apple-system, Segoe UI, Roboto, sans-serif;
+    }
+
+    body {
+      margin: 0;
+      background: #f5f5f5;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 1fr 320px;
+      gap: 12px;
+      padding: 12px;
+    }
+
+    .toolbar {
+      background: #fff;
+      border-radius: 8px;
+      padding: 8px 12px;
+      box-shadow: 0 1px 6px rgba(0, 0, 0, .08);
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .device {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 8px 24px rgba(15, 22, 33, .1);
+      min-height: 420px;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 16px;
+    }
+
+    .viewport {
+      width: 100%;
+      height: 100%;
+      position: relative;
+    }
+
+    .xaml-root {
+      width: 100%;
+      height: 100%;
+    }
+
+    .side {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .card {
+      background: #fff;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, .06);
+    }
+
+    .card .hd {
+      padding: 10px 12px;
+      border-bottom: 1px solid #e5e7eb;
+      font-weight: 600;
+    }
+
+    .card .bd {
+      padding: 10px 12px;
+    }
+
+    .prop-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 0;
+      border-bottom: 1px dashed #eef2f7;
+    }
+
+    .prop-row:last-child {
+      border-bottom: 0;
+    }
+
+    .prop-key {
+      color: #334155;
+      font-weight: 600;
+      font-size: 12px;
+    }
+
+    .prop-val {
+      color: #0f172a;
+      font-size: 12px;
+    }
+
+    .prop-row button {
+      font-size: 11px;
+      padding: 4px 8px;
+    }
+
+    .add-btn {
+      width: 100%;
+      padding: 8px;
+    }
+
+    .maui-element {
+      box-sizing: border-box;
+      position: relative;
+      cursor: pointer;
+    }
+
+    .maui-element.selected {
+      outline: 2px solid rgba(37, 99, 235, .6);
+    }
+
+    .maui-stacklayout {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      width: 100%;
+    }
+
+    .maui-stacklayout.is-horizontal {
+      flex-direction: row;
+    }
+
+    .maui-grid {
+      display: grid;
+      gap: 8px;
+      width: 100%;
+    }
+
+    .maui-label {
+      display: block;
+      padding: 2px 0;
+      white-space: pre-wrap;
+    }
+
+    .maui-button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 8px 18px;
+      border-radius: 8px;
+      border: none;
+      font-weight: 600;
+      background: #2563eb;
+      color: #fff;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="layout">
+    <div>
+      <div class="toolbar card">
+        <button id="zoomOut">-</button>
+        <div id="zoomLevel">100%</div>
+        <button id="zoomIn">+</button>
+        <button id="zoomFit">Fit</button>
+        <button id="zoomActual">1:1</button>
+      </div>
+      <div class="device card" style="margin-top:12px;">
+        <div class="viewport">
+          <div class="xaml-root" id="root"></div>
+        </div>
+      </div>
+    </div>
+    <div class="side">
+      <div class="card">
+        <div class="hd">Lastnosti</div>
+        <div class="bd" id="props"></div>
+        <div class="bd"><button id="addProp" class="add-btn">+ Dodaj lastnost…</button></div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // Simple zoom
+    let zoom = 100;
+    const rootEl = document.getElementById('root');
+    const propsEl = document.getElementById('props');
+    const setZoom = (z) => { zoom = Math.max(25, Math.min(400, z)); document.querySelector('.viewport').style.transform = 'scale(' + (zoom / 100) + ')'; document.getElementById('zoomLevel').textContent = zoom + '%'; };
+    document.getElementById('zoomIn').onclick = () => setZoom(zoom + 10);
+    document.getElementById('zoomOut').onclick = () => setZoom(zoom - 10);
+    document.getElementById('zoomActual').onclick = () => setZoom(100);
+    document.getElementById('zoomFit').onclick = () => setZoom(100); // naive
+
+    // XAML parsing using DOMParser -> lightweight model
+    const toModel = (node) => {
+      if (node.nodeType !== 1) return null;
+      const el = { type: node.nodeName, attrs: {}, children: [], text: '' };
+      for (let i = 0; i < node.attributes.length; i++) { const a = node.attributes[i]; el.attrs[a.name] = a.value; }
+      for (let c = node.firstChild; c; c = c.nextSibling) {
+        if (c.nodeType === 3) { el.text += c.nodeValue; }
+        else if (c.nodeType === 1) { const m = toModel(c); if (m) el.children.push(m); }
+      }
+      el.text = el.text.trim();
+      return el;
+    };
+
+    const parseXaml = (xaml) => {
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xaml, 'application/xml');
+      const err = doc.querySelector('parsererror');
+      if (err) {
+        console.warn('XAML parse error', err.textContent);
+        return [];
+      }
+      const roots = [];
+      for (let n = doc.documentElement; n; n = null) { // single root typical
+        const m = toModel(n); if (m) roots.push(m);
+      }
+      return roots;
+    };
+
+    // Rendering
+    let idCounter = 0; let selectedId = null; let elementsById = new Map();
+    const toPx = v => (/^\d+(\.\d+)?$/.test(v) ? (v + 'px') : v);
+    const styleFromAttrs = (attrs) => {
+      const s = {};
+      if (attrs.Background || attrs.BackgroundColor) s.backgroundColor = attrs.Background || attrs.BackgroundColor;
+      if (attrs.TextColor || attrs.Color) s.color = attrs.TextColor || attrs.Color;
+      if (attrs.WidthRequest || attrs.Width) s.width = toPx(attrs.WidthRequest || attrs.Width);
+      if (attrs.HeightRequest || attrs.Height) s.height = toPx(attrs.HeightRequest || attrs.Height);
+      if (attrs.Padding) s.padding = attrs.Padding;
+      if (attrs.Margin) s.margin = attrs.Margin;
+      if (attrs.CornerRadius) s.borderRadius = attrs.CornerRadius;
+      if (attrs.BorderColor) s.borderColor = attrs.BorderColor, s.borderStyle = 'solid', s.borderWidth = s.borderWidth || '1px';
+      if (attrs.Opacity) s.opacity = attrs.Opacity;
+      return s;
+    };
+
+    const applyStyle = (el, s) => { for (const k in s) el.style[k] = s[k]; };
+    const setCommon = (div, m, cls) => {
+      const id = 'el_' + (++idCounter);
+      div.classList.add('maui-element'); if (cls) div.classList.add(cls);
+      div.dataset.elementId = id; elementsById.set(id, { model: m, node: div });
+      const s = styleFromAttrs(m.attrs); applyStyle(div, s);
+      div.onclick = (ev) => { document.querySelectorAll('.maui-element.selected').forEach(x => x.classList.remove('selected')); div.classList.add('selected'); selectedId = id; renderProps(); ev.stopPropagation(); };
+      return id;
+    };
+
+    const renderElement = (m) => {
+      const t = (m.type || '').toLowerCase();
+      if (t.endsWith('stacklayout')) {
+        const div = document.createElement('div'); setCommon(div, m, 'maui-stacklayout');
+        if ((m.attrs.Orientation || '').toLowerCase() === 'horizontal') div.classList.add('is-horizontal');
+        m.children.forEach(c => div.appendChild(renderElement(c)));
+        return div;
+      }
+      if (t.endsWith('grid')) {
+        const div = document.createElement('div'); setCommon(div, m, 'maui-grid');
+        m.children.forEach(c => div.appendChild(renderElement(c)));
+        return div;
+      }
+      if (t.endsWith('label')) {
+        const el = document.createElement('div'); setCommon(el, m, 'maui-label'); el.textContent = m.attrs.Text || m.text || 'Label'; return el;
+      }
+      if (t.endsWith('button')) {
+        const el = document.createElement('button'); setCommon(el, m, 'maui-button'); el.textContent = m.attrs.Text || 'Button'; return el;
+      }
+      if (t.endsWith('frame') || t.endsWith('border')) {
+        const el = document.createElement('div'); setCommon(el, m, t.endsWith('frame') ? 'maui-frame' : 'maui-border'); m.children.forEach(c => el.appendChild(renderElement(c))); return el;
+      }
+      // default container
+      const div = document.createElement('div'); setCommon(div, m, 'maui-element'); m.children.forEach(c => div.appendChild(renderElement(c))); return div;
+    };
+
+    const renderRoots = (models) => { rootEl.innerHTML = ''; idCounter = 0; elementsById.clear(); models.forEach(m => rootEl.appendChild(renderElement(m))); selectedId = null; renderProps(); };
+
+    // Properties panel
+    const renderProps = () => {
+      propsEl.innerHTML = '';
+      if (!selectedId) { propsEl.innerHTML = '<div style="color:#64748b">Ni izbranega elementa</div>'; return; }
+      const item = elementsById.get(selectedId); if (!item) return;
+      const { model, node } = item;
+      const entries = Object.entries(model.attrs);
+      for (const [k, v] of entries) {
+        const row = document.createElement('div'); row.className = 'prop-row';
+        row.innerHTML = '<div class="prop-key"></div><div class="prop-val"></div><button>Uredi</button>';
+        row.children[0].textContent = k; row.children[1].textContent = String(v);
+        row.children[2].onclick = async () => {
+          const nv = prompt('Vnesi novo vrednost za ' + k, String(v)); if (nv == null) return;
+          model.attrs[k] = nv; // update model
+          // live DOM update
+          if (k.toLowerCase().includes('background')) node.style.backgroundColor = nv;
+          else if (k.toLowerCase().includes('textcolor') || k.toLowerCase() === 'color') node.style.color = nv;
+          else if (k.toLowerCase() === 'text') node.textContent = nv;
+          else if (k.toLowerCase() === 'width' || k.toLowerCase() === 'widthrequest') node.style.width = toPx(nv);
+          else if (k.toLowerCase() === 'height' || k.toLowerCase() === 'heightrequest') node.style.height = toPx(nv);
+          else if (k.toLowerCase() === 'margin') node.style.margin = nv;
+          else if (k.toLowerCase() === 'padding') node.style.padding = nv;
+          else if (k.toLowerCase() === 'cornerradius') node.style.borderRadius = nv;
+          else node.setAttribute(k, nv);
+          row.children[1].textContent = String(nv);
+          // propagate to host if needed
+          try { window.chrome?.webview?.postMessage({ type: 'updateProperty', elementId: selectedId, key: k, value: nv }); } catch { }
+        };
+        propsEl.appendChild(row);
+      }
+    };
+
+    document.getElementById('addProp').onclick = () => {
+      if (!selectedId) return;
+      const k = prompt('Vnesi ime lastnosti (npr. BackgroundColor, Text, …)'); if (!k) return;
+      const v = prompt('Vnesi vrednost za ' + k); if (v == null) return;
+      const item = elementsById.get(selectedId); if (!item) return;
+      item.model.attrs[k] = v; renderProps();
+      // live dom
+      const node = item.node;
+      if (k.toLowerCase().includes('background')) node.style.backgroundColor = v;
+      else if (k.toLowerCase().includes('textcolor') || k.toLowerCase() === 'color') node.style.color = v;
+      else if (k.toLowerCase() === 'text') node.textContent = v;
+      else if (k.toLowerCase() === 'width' || k.toLowerCase() === 'widthrequest') node.style.width = toPx(v);
+      else if (k.toLowerCase() === 'height' || k.toLowerCase() === 'heightrequest') node.style.height = toPx(v);
+      else if (k.toLowerCase() === 'margin') node.style.margin = v;
+      else if (k.toLowerCase() === 'padding') node.style.padding = v;
+      else if (k.toLowerCase() === 'cornerradius') node.style.borderRadius = v;
+      else node.setAttribute(k, v);
+      try { window.chrome?.webview?.postMessage({ type: 'addProperty', elementId: selectedId, key: k, value: v }); } catch { }
+    };
+
+    // Host messaging (WebView2)
+    const receive = (data) => {
+      if (!data || typeof data !== 'object') return;
+      if (data.type === 'renderXaml' && typeof data.xaml === 'string') {
+        const models = parseXaml(data.xaml);
+        renderRoots(models);
+      }
+    };
+    if (window.chrome && window.chrome.webview) {
+      window.chrome.webview.addEventListener('message', (e) => {
+        let data = e.data;
+        try { if (typeof data === 'string') data = JSON.parse(data); } catch { }
+        receive(data);
+      });
+    }
+  </script>
+</body>
+
+</html>

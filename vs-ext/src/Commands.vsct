@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<CommandTable xmlns="http://schemas.microsoft.com/VisualStudio/2005-10-18/CommandTable" xmlns:xs="http://www.w3.org/2001/XMLSchema">
+  <Extern href="stdidcmd.h" />
+  <Extern href="vsshlids.h" />
+  <Commands>
+    <Groups>
+      <Group guid="{7B0F8A5A-4B0C-4E6A-9B1B-5A1F3F86B5E1}" id="0x0100" priority="0x0600">
+        <Parent guid="guidSHLMainMenu" id="IDM_VS_MENU_VIEW" />
+      </Group>
+    </Groups>
+    <Buttons>
+      <Button guid="{7B0F8A5A-4B0C-4E6A-9B1B-5A1F3F86B5E1}" id="0x0200" priority="0x0100" type="Button">
+        <Parent guid="{7B0F8A5A-4B0C-4E6A-9B1B-5A1F3F86B5E1}" id="0x0100" />
+        <CommandFlag>DynamicVisibility</CommandFlag>
+        <Strings>
+          <ButtonText>MAUI XAML Preview</ButtonText>
+        </Strings>
+      </Button>
+    </Buttons>
+  </Commands>
+  <Symbols>
+    <GuidSymbol name="guidVsct" value="{7B0F8A5A-4B0C-4E6A-9B1B-5A1F3F86B5E1}">
+      <IDSymbol name="grpView" value="0x0100" />
+      <IDSymbol name="cmdOpenToolWindow" value="0x0200" />
+    </GuidSymbol>
+  </Symbols>
+</CommandTable>
