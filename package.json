@@ -1,0 +1,107 @@
+{
+  "name": "maui-xaml-preview",
+  "displayName": "MAUI XAML Preview",
+  "description": "Prikaže predogled .NET MAUI XAML dokumentov in omogoča urejanje lastnosti.",
+  "publisher": "aljo98",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/aljo98/MAUI-xaml-preview-edit"
+  },
+  "engines": {
+    "vscode": "^1.104.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onLanguage:xaml"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "mauiXamlPreview.openPreview",
+        "title": "Odpri MAUI XAML Preview",
+        "category": ".NET MAUI",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "mauiXamlPreview.addEntity",
+        "title": "Vstavi MAUI kontrolnik…",
+        "category": ".NET MAUI",
+        "icon": "$(add)"
+      },
+      {
+        "command": "mauiProperties.addProperty",
+        "title": "Dodaj XAML lastnost…",
+        "category": ".NET MAUI",
+        "icon": "$(list-selection)"
+      },
+      {
+        "command": "mauiProperties.editProperty",
+        "title": "Uredi XAML lastnost…",
+        "category": ".NET MAUI",
+        "icon": "$(settings-gear)"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "maui-designer",
+          "title": "MAUI Designer",
+          "icon": "media/maui-designer.svg"
+        }
+      ]
+    },
+    "views": {
+      "maui-designer": [
+        {
+          "id": "mauiProperties",
+          "name": "Lastnosti"
+        },
+        {
+          "id": "mauiTemplates",
+          "name": "Template primeri"
+        },
+        {
+          "id": "mauiStructure",
+          "name": "Struktura"
+        }
+      ]
+    },
+    "menus": {
+      "editor/title": [
+        {
+          "command": "mauiXamlPreview.openPreview",
+          "when": "resourceExtname == .xaml",
+          "group": "navigation@10",
+          "icon": "$(preview)"
+        }
+      ],
+      "explorer/context": [
+        {
+          "command": "mauiXamlPreview.openPreview",
+          "when": "resourceExtname == .xaml",
+          "group": "navigation",
+          "icon": "$(preview)"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "compile": "tsc -p ./",
+    "watch": "tsc -w -p ./",
+    "lint": "echo 'No lint configured'",
+    "package": "vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.17",
+    "@types/vscode": "1.104.0",
+    "typescript": "5.9.2"
+  },
+  "dependencies": {
+    "fast-xml-parser": "4.5.3"
+  }
+}

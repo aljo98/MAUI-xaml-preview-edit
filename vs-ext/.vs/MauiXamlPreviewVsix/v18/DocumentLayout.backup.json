@@ -1,0 +1,82 @@
+{
+  "Version": 1,
+  "WorkspaceRootPath": "J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\",
+  "Documents": [
+    {
+      "AbsoluteMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\Directory.Build.props||{8B382828-6202-11D1-8870-0000F87579D2}",
+      "RelativeMoniker": "D:0:0:{A2FE74E1-B743-11D0-AE1A-00A0C90FFFC3}|\u003CMiscFiles\u003E|solutionrelative:Directory.Build.props||{8B382828-6202-11D1-8870-0000F87579D2}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{E5D37C7F-BD8A-4E6C-9E6A-9BB9DAD3F2B2}|src\\MauiXamlPreviewVsix.csproj|j:\\af\\maui-xaml-preview\\maui-xaml-preview-edit\\vs-ext\\src\\source.extension.vsixmanifest||{2868F8ED-DE25-439D-9F59-AD52458E9328}",
+      "RelativeMoniker": "D:0:0:{E5D37C7F-BD8A-4E6C-9E6A-9BB9DAD3F2B2}|src\\MauiXamlPreviewVsix.csproj|solutionrelative:src\\source.extension.vsixmanifest||{2868F8ED-DE25-439D-9F59-AD52458E9328}"
+    },
+    {
+      "AbsoluteMoniker": "D:0:0:{E5D37C7F-BD8A-4E6C-9E6A-9BB9DAD3F2B2}|src\\MauiXamlPreviewVsix.csproj|j:\\af\\maui-xaml-preview\\maui-xaml-preview-edit\\vs-ext\\src\\source.extension.vsixmanifest||{FA3CD31E-987B-443A-9B81-186104E8DAC1}|",
+      "RelativeMoniker": "D:0:0:{E5D37C7F-BD8A-4E6C-9E6A-9BB9DAD3F2B2}|src\\MauiXamlPreviewVsix.csproj|solutionrelative:src\\source.extension.vsixmanifest||{FA3CD31E-987B-443A-9B81-186104E8DAC1}|"
+    }
+  ],
+  "DocumentGroupContainers": [
+    {
+      "Orientation": 0,
+      "VerticalTabListWidth": 256,
+      "DocumentGroups": [
+        {
+          "DockedWidth": 200,
+          "SelectedChildIndex": 3,
+          "Children": [
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{aa2115a1-9712-457b-9047-dbb71ca2cdd2}"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 2,
+              "Title": "source.extension.vsixmanifest",
+              "DocumentMoniker": "J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\source.extension.vsixmanifest",
+              "RelativeDocumentMoniker": "src\\source.extension.vsixmanifest",
+              "ToolTip": "J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\source.extension.vsixmanifest",
+              "RelativeToolTip": "src\\source.extension.vsixmanifest",
+              "ViewState": "AgIAABcAAAAAAAAAAABBwAAAAAAAAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.003464|",
+              "WhenOpened": "2025-09-30T11:57:23.346Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 1,
+              "Title": "source.extension.vsixmanifest [Design]",
+              "DocumentMoniker": "J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\source.extension.vsixmanifest",
+              "RelativeDocumentMoniker": "src\\source.extension.vsixmanifest",
+              "ToolTip": "J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\source.extension.vsixmanifest [Design]",
+              "RelativeToolTip": "src\\source.extension.vsixmanifest [Design]",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.003464|",
+              "WhenOpened": "2025-09-30T11:57:02.597Z",
+              "EditorCaption": " [Design]"
+            },
+            {
+              "$type": "Document",
+              "DocumentIndex": 0,
+              "Title": "Directory.Build.props",
+              "DocumentMoniker": "J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\Directory.Build.props",
+              "RelativeDocumentMoniker": "Directory.Build.props",
+              "ToolTip": "J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\Directory.Build.props",
+              "RelativeToolTip": "Directory.Build.props",
+              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAkAAAApAAAAAAAAAA==",
+              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.003801|",
+              "WhenOpened": "2025-09-30T11:39:09.873Z",
+              "EditorCaption": ""
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{56df62a4-05a3-4e5b-aa1a-99371ccfb997}"
+            },
+            {
+              "$type": "Bookmark",
+              "Name": "ST:0:0:{cce594b6-0c39-4442-ba28-10c64ac7e89f}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

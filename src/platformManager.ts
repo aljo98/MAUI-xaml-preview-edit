@@ -115,8 +115,7 @@ export class PlatformManager {
       html += `
         <button class="platform-btn ${isActive ? 'active' : ''}" 
             data-platform="${platform.name}"
-            title="${platform.displayName}"
-            onclick="switchPlatform('${platform.name}')">
+            title="${platform.displayName}">
           ${this.getPlatformIcon(platform.name)} ${platform.displayName}
         </button>
       `;
@@ -309,68 +308,39 @@ export class PlatformManager {
     return `
       function switchPlatform(platformName) {
                 console.log('[PlatformManager] Switching to platform:', platformName);
-                
-                // Send message to VS Code extension
-                if (typeof acquireVsCodeApi !== 'undefined') {
+                try {
                     const vscode = acquireVsCodeApi();
                     vscode.postMessage({
                         command: 'switchPlatform',
                         platform: platformName
                     });
-                } else {
-                    console.warn('[PlatformManager] VS Code API not available');
+                } catch (err) {
+                    console.warn('[PlatformManager] VS Code API not available', err);
                 }
-                
-                // Update active button immediately for visual feedback
-                document.querySelectorAll('.platform-btn').forEach(btn => {
-                    btn.classList.remove('active');
-                });
-                
+                document.querySelectorAll('.platform-btn').forEach(btn => btn.classList.remove('active'));
                 const activeBtn = document.querySelector('[data-platform="' + platformName + '"]');
-                if (activeBtn) {
-                    activeBtn.classList.add('active');
-                    console.log('[PlatformManager] Updated active button for:', platformName);
-                } else {
-                    console.warn('[PlatformManager] Button not found for platform:', platformName);
-                }
+                if (activeBtn) activeBtn.classList.add('active');
             }
 
-            // expose globally for inline handlers
             window.switchPlatform = switchPlatform;
 
-            // Set up platform button event listeners
             function setupPlatformSwitching() {
-                console.log('[PlatformManager] Setting up platform switching');
-                
                 const platformButtons = document.querySelectorAll('.platform-btn');
-                console.log('[PlatformManager] Found platform buttons:', platformButtons.length);
-                
                 platformButtons.forEach(btn => {
                     btn.addEventListener('click', function(e) {
                         e.preventDefault();
                         e.stopPropagation();
-                        
                         const platform = this.getAttribute('data-platform');
-                        console.log('[PlatformManager] Platform button clicked:', platform);
-                        
-                        if (platform) {
-                            switchPlatform(platform);
-                        } else {
-                            console.warn('[PlatformManager] No platform attribute found');
-                        }
+                        if (platform) switchPlatform(platform);
                     });
                 });
             }
 
-            // Initialize when DOM is ready
             if (document.readyState === 'loading') {
                 document.addEventListener('DOMContentLoaded', setupPlatformSwitching);
             } else {
                 setupPlatformSwitching();
             }
-
-            // Also try to setup immediately in case DOMContentLoaded already fired
-            setTimeout(setupPlatformSwitching, 100);
         `;
   }
 }

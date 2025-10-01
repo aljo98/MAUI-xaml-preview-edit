@@ -1,0 +1,13 @@
+﻿<Project>
+  <PropertyGroup>
+    <!-- Suppress NU1603 warnings about package dependency resolution during restore and build -->
+    <NoWarn>$(NoWarn);NU1603</NoWarn>
+    <RestoreNoWarn>$(RestoreNoWarn);NU1603</RestoreNoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Pin Microsoft.VisualStudio.SDK.Analyzers to the resolved version to avoid resolution mismatches -->
+    <PackageVersion Include="Microsoft.VisualStudio.SDK.Analyzers" Version="17.7.22" />
+    <!-- Ensure the analyzer package is referenced so NuGet resolves it to the pinned version -->
+    <PackageReference Include="Microsoft.VisualStudio.SDK.Analyzers" Version="17.7.22" PrivateAssets="all" />
+  </ItemGroup>
+</Project>

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "tpl_border_basic",
+    "name": "Border – Basic",
+    "category": "Layout",
+    "description": "Border with padding and rounded corners",
+    "xaml": "<Border Stroke=\"#1B1F2A\" StrokeThickness=\"1\" BackgroundColor=\"#FFFFFF\" Padding=\"16\" CornerRadius=\"8\">\n  <StackLayout Spacing=\"8\">\n    <Label Text=\"Title\" FontAttributes=\"Bold\" FontSize=\"18\" />\n    <Label Text=\"Subtitle or content goes here...\" TextColor=\"#4B5563\" />\n  </StackLayout>\n</Border>"
+  },
+  {
+    "id": "tpl_grid_two_columns",
+    "name": "Grid – 2 Columns",
+    "category": "Layout",
+    "description": "Grid with two columns and sample content",
+    "xaml": "<Grid ColumnDefinitions=\"Auto,*\" RowDefinitions=\"Auto,Auto\" ColumnSpacing=\"8\" RowSpacing=\"8\">\n  <Label Grid.Row=\"0\" Grid.Column=\"0\" Text=\"Label:\" FontAttributes=\"Bold\" />\n  <Entry Grid.Row=\"0\" Grid.Column=\"1\" Placeholder=\"Type here\" />\n  <Label Grid.Row=\"1\" Grid.Column=\"0\" Text=\"Another:\" FontAttributes=\"Bold\" />\n  <Entry Grid.Row=\"1\" Grid.Column=\"1\" Placeholder=\"Value\" />\n</Grid>"
+  },
+  {
+    "id": "tpl_boxview_separator",
+    "name": "BoxView – Separator",
+    "category": "Utility",
+    "description": "Thin separator line",
+    "xaml": "<BoxView HeightRequest=\"1\" BackgroundColor=\"#E5E7EB\" Margin=\"8,12\" />"
+  }
+]

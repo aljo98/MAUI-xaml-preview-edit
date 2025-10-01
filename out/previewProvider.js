@@ -1,8 +1,41 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MauiXamlPreviewProvider = void 0;
-const vscode = require("vscode");
-const path = require("path");
+const vscode = __importStar(require("vscode"));
+const path = __importStar(require("path"));
 const fast_xml_parser_1 = require("fast-xml-parser");
 const resourceManager_1 = require("./resourceManager");
 const platformManager_1 = require("./platformManager");
@@ -55,6 +88,45 @@ class MauiXamlPreviewProvider {
             allowBooleanAttributes: true
         });
         console.log('[PreviewProvider] Initialized with managers');
+    }
+    // Provide color suggestions for property editors
+    getColorSuggestions() {
+        const suggestions = new Set();
+        // Theme colors
+        for (const [k, v] of this._themeColors.entries()) {
+            suggestions.add(k);
+            suggestions.add(v);
+        }
+        // Parsed resources
+        for (const r of this._resources) {
+            if (r.type === 'Color' && r.value) {
+                suggestions.add(r.key);
+                suggestions.add(r.value);
+            }
+        }
+        // Common named colors
+        for (const name of Object.keys(COLOR_NAME_MAP)) {
+            suggestions.add(name);
+        }
+        return Array.from(suggestions).filter(Boolean).slice(0, 200);
+    }
+    // Provide style key suggestions
+    getStyleSuggestions() {
+        const styles = new Set();
+        for (const s of this._styles) {
+            if (s.key)
+                styles.add(s.key);
+        }
+        return Array.from(styles).slice(0, 200);
+    }
+    // Provide generic StaticResource keys (e.g., Colors, Brushes, etc.)
+    getResourceKeySuggestions() {
+        const keys = new Set();
+        for (const r of this._resources) {
+            if (r.key)
+                keys.add(r.key);
+        }
+        return Array.from(keys).slice(0, 300);
     }
     setElementHighlightDecoration(decoration) {
         this._elementHighlightDecoration = decoration;
@@ -853,6 +925,78 @@ class MauiXamlPreviewProvider {
 
     let currentViewMode = '${this._viewMode}';
 
+    // Helpers for mapping MAUI-like values to CSS
+    const toPx = (v) => {
+        if (v == null) return '';
+        const s = String(v).trim();
+        if (!s) return '';
+        // Preserve if looks like CSS unit already
+        if (/^(\d+\.?\d*)(px|em|rem|%)$/i.test(s)) return s;
+        // number -> px
+        if (/^\d+(\.\d+)?$/.test(s)) return s + 'px';
+        return s;
+    };
+
+    const parseThickness = (val) => {
+        if (!val && val !== 0) return '';
+        const raw = String(val).trim();
+        if (!raw) return '';
+        // Allow comma or space separated
+        const parts = raw.split(/[ ,]+/).filter(Boolean).map(n => n.trim());
+        if (parts.length === 1) {
+            const a = toPx(parts[0]);
+            return a + ' ' + a + ' ' + a + ' ' + a;
+        }
+        if (parts.length === 2) {
+            // MAUI: h, v -> CSS: top right bottom left = v h v h
+            const h = toPx(parts[0]);
+            const v = toPx(parts[1]);
+            return v + ' ' + h + ' ' + v + ' ' + h;
+        }
+        if (parts.length === 4) {
+            const t = toPx(parts[0]);
+            const r = toPx(parts[1]);
+            const b = toPx(parts[2]);
+            const l = toPx(parts[3]);
+            return t + ' ' + r + ' ' + b + ' ' + l;
+        }
+        // Fallback: join as-is
+        return parts.map(toPx).join(' ');
+    };
+
+    const parseCornerRadius = (val) => {
+        if (!val && val !== 0) return '';
+        const raw = String(val).trim();
+        if (!raw) return '';
+        const parts = raw.split(/[ ,]+/).filter(Boolean).map(n => n.trim());
+        if (parts.length === 1) {
+            const a = toPx(parts[0]);
+            return a;
+        }
+        if (parts.length === 2) {
+            // CSS semantics: tl/br then tr/bl
+            const a = toPx(parts[0]);
+            const b = toPx(parts[1]);
+            return a + ' ' + b;
+        }
+        if (parts.length === 3) {
+            // CSS: tl tr br
+            const a = toPx(parts[0]);
+            const b = toPx(parts[1]);
+            const c = toPx(parts[2]);
+            return a + ' ' + b + ' ' + c;
+        }
+        if (parts.length >= 4) {
+            // Assume order tl, tr, br, bl which matches CSS
+            const tl = toPx(parts[0]);
+            const tr = toPx(parts[1]);
+            const br = toPx(parts[2]);
+            const bl = toPx(parts[3]);
+            return tl + ' ' + tr + ' ' + br + ' ' + bl;
+        }
+        return '';
+    };
+
     const setViewModeButtons = (mode) => {
         document.querySelectorAll('.view-btn').forEach(btn => {
             btn.classList.toggle('active', btn.getAttribute('data-mode') === mode);
@@ -974,6 +1118,77 @@ class MauiXamlPreviewProvider {
 
         if (message.type === 'applyViewMode') {
             applyViewMode(message.mode, message.selectedId);
+        }
+
+        if (message.type === 'updateProperty') {
+            try {
+                const selected = document.querySelector('.maui-element.selected');
+                if (selected) {
+                    const key = message.property || '';
+                    const val = String(message.value ?? '').trim();
+
+                    const setStyle = (k, v) => selected && (selected.style[k] = v);
+                    const px = (v) => (/^\d+(\.\d+)?$/.test(v) ? (v + 'px') : v);
+
+                    const kLower = key.toLowerCase();
+                    if (kLower === 'background' || kLower.includes('backgroundcolor')) setStyle('backgroundColor', val);
+                    else if (kLower.includes('textcolor') || kLower === 'color') setStyle('color', val);
+                    else if (kLower === 'widthrequest' || kLower === 'width') setStyle('width', px(val));
+                    else if (kLower === 'heightrequest' || kLower === 'height') setStyle('height', px(val));
+                    else if (kLower === 'maxwidthrequest' || kLower === 'maxwidth') setStyle('maxWidth', px(val));
+                    else if (kLower === 'maxheightrequest' || kLower === 'maxheight') setStyle('maxHeight', px(val));
+                    else if (kLower === 'minwidthrequest' || kLower === 'minwidth') setStyle('minWidth', px(val));
+                    else if (kLower === 'minheightrequest' || kLower === 'minheight') setStyle('minHeight', px(val));
+                    else if (kLower === 'padding') setStyle('padding', parseThickness(val));
+                    else if (kLower === 'margin') setStyle('margin', parseThickness(val));
+                    else if (kLower === 'cornerradius') setStyle('borderRadius', parseCornerRadius(val));
+                    else if (kLower === 'bordercolor' || kLower === 'stroke') setStyle('borderColor', val);
+                    else if (kLower === 'borderthickness' || kLower === 'strokethickness') setStyle('borderWidth', parseThickness(val));
+                    else if (kLower === 'grid.row') setStyle('gridRowStart', val);
+                    else if (kLower === 'grid.column') setStyle('gridColumnStart', val);
+                    else if (kLower === 'grid.rowspan') selected.style.gridRowEnd = 'span ' + (parseInt(val, 10) || 1);
+                    else if (kLower === 'grid.columnspan') selected.style.gridColumnEnd = 'span ' + (parseInt(val, 10) || 1);
+                    else if (kLower === 'opacity') setStyle('opacity', val);
+                    else if (kLower === 'isvisible') setStyle('display', (val.toLowerCase() === 'false' || val === '0') ? 'none' : '');
+                    else if (kLower === 'isenabled') { setStyle('pointerEvents', (val.toLowerCase() === 'false' || val === '0') ? 'none' : ''); setStyle('opacity', (val.toLowerCase() === 'false' || val === '0') ? '0.6' : ''); }
+                    else if (kLower === 'fontsize') setStyle('fontSize', px(val));
+                    else if (kLower === 'fontfamily') setStyle('fontFamily', val);
+                    else if (kLower === 'lineheight') setStyle('lineHeight', val);
+                    else if (kLower === 'characterspacing') setStyle('letterSpacing', px(val));
+                    else if (kLower === 'textdecorations') setStyle('textDecoration', val.toLowerCase());
+                    else if (kLower === 'fontattributes') {
+                        const low = val.toLowerCase();
+                        if (low.includes('bold')) setStyle('fontWeight', '600');
+                        else setStyle('fontWeight', '');
+                        if (low.includes('italic')) setStyle('fontStyle', 'italic');
+                        else setStyle('fontStyle', '');
+                    }
+                    else if (kLower === 'horizontaltextalignment' || kLower === 'textalignment') {
+                        const map = { start: 'left', center: 'center', end: 'right' };
+                        setStyle('textAlign', map[val.toLowerCase()] || val);
+                    }
+                    else if (kLower === 'horizontaloptions') {
+                        const low = val.toLowerCase();
+                        const map = { start: 'flex-start', center: 'center', end: 'flex-end', fill: 'stretch' };
+                        setStyle('alignSelf', map[low] || '');
+                    }
+                    else if (kLower === 'verticaloptions') {
+                        const low = val.toLowerCase();
+                        const map = { start: 'flex-start', center: 'center', end: 'flex-end', fill: 'stretch' };
+                        setStyle('alignSelf', map[low] || '');
+                    }
+                    else if (kLower === 'aspect') {
+                        const map = { aspectfit: 'contain', aspectfill: 'cover', fill: 'fill' };
+                        setStyle('objectFit', map[val.toLowerCase()] || 'contain');
+                    }
+
+                    if (key === 'Text') {
+                        selected.innerText = val;
+                    }
+                }
+            } catch (e) {
+                console.warn('[Webview] Failed to apply property update', e);
+            }
         }
     });
 

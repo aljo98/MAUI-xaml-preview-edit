@@ -1,12 +1,53 @@
 "use strict";
+var __createBinding = (this && this.__createBinding) || (Object.create ? (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    var desc = Object.getOwnPropertyDescriptor(m, k);
+    if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+      desc = { enumerable: true, get: function() { return m[k]; } };
+    }
+    Object.defineProperty(o, k2, desc);
+}) : (function(o, m, k, k2) {
+    if (k2 === undefined) k2 = k;
+    o[k2] = m[k];
+}));
+var __setModuleDefault = (this && this.__setModuleDefault) || (Object.create ? (function(o, v) {
+    Object.defineProperty(o, "default", { enumerable: true, value: v });
+}) : function(o, v) {
+    o["default"] = v;
+});
+var __importStar = (this && this.__importStar) || (function () {
+    var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function (o) {
+            var ar = [];
+            for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) ar[ar.length] = k;
+            return ar;
+        };
+        return ownKeys(o);
+    };
+    return function (mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        __setModuleDefault(result, mod);
+        return result;
+    };
+})();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.PropertyTreeItem = exports.MauiPropertiesProvider = void 0;
-const vscode = require("vscode");
+const vscode = __importStar(require("vscode"));
 class MauiPropertiesProvider {
     constructor(extensionUri) {
         this._onDidChangeTreeData = new vscode.EventEmitter();
         this.onDidChangeTreeData = this._onDidChangeTreeData.event;
         this._elements = [];
+        this._showAllFlat = true;
+        this._extraPropertySuggestions = [
+            'Text', 'TextColor', 'BackgroundColor', 'FontSize', 'FontAttributes', 'FontFamily', 'LineHeight', 'CharacterSpacing', 'TextDecorations',
+            'WidthRequest', 'HeightRequest', 'MinWidthRequest', 'MinHeightRequest', 'MaxWidthRequest', 'MaxHeightRequest',
+            'Margin', 'Padding', 'CornerRadius', 'BorderColor', 'BorderThickness', 'Stroke', 'StrokeThickness', 'Opacity', 'IsVisible', 'IsEnabled',
+            'HorizontalOptions', 'VerticalOptions', 'HorizontalTextAlignment', 'TextAlignment', 'Grid.Row', 'Grid.Column', 'Grid.RowSpan', 'Grid.ColumnSpan',
+            'Style', 'ClassId'
+        ];
         this._extensionUri = extensionUri;
     }
     refresh() {
@@ -25,22 +66,42 @@ class MauiPropertiesProvider {
     }
     getChildren(element) {
         if (!element) {
-            // Root elements - sekcije
+            // Root items: Properties (flat list) and Structure
             return Promise.resolve([
-                new PropertyTreeItem('Videz', 'section', vscode.TreeItemCollapsibleState.Expanded, 'fas fa-palette', undefined, undefined, 'appearance'),
-                new PropertyTreeItem('Postavitev', 'section', vscode.TreeItemCollapsibleState.Expanded, 'fas fa-ruler-combined', undefined, undefined, 'layout'),
+                new PropertyTreeItem('Lastnosti', 'section-props', vscode.TreeItemCollapsibleState.Expanded, 'fas fa-cog'),
                 new PropertyTreeItem('Struktura Elementov', 'section', vscode.TreeItemCollapsibleState.Expanded, 'fas fa-sitemap', undefined, undefined, 'structure')
             ]);
         }
         if (element.contextValue === 'section') {
-            if (element.label === 'Struktura Elementov') {
-                // Tree structure elements
-                return Promise.resolve(this._getStructureItems());
+            // Tree structure elements
+            return Promise.resolve(this._getStructureItems());
+        }
+        if (element.contextValue === 'section-props') {
+            // Flat properties list with an Add Property action at top
+            const items = [];
+            if (!this._selectedElement) {
+                items.push(new PropertyTreeItem('Ni izbranega elementa', 'info', vscode.TreeItemCollapsibleState.None, 'fas fa-info-circle'));
+                return Promise.resolve(items);
             }
-            else {
-                // Properties for selected element
-                return Promise.resolve(this._getPropertiesForSection(element.sectionType || 'appearance'));
+            // Add property action
+            const addItem = new PropertyTreeItem('+ Dodaj lastnost…', 'add-property', vscode.TreeItemCollapsibleState.None, 'fas fa-plus');
+            addItem.command = {
+                command: 'mauiProperties.addProperty',
+                title: 'Dodaj lastnost',
+                arguments: [this._selectedElement]
+            };
+            items.push(addItem);
+            // Show all current properties as editable rows
+            for (const prop of this._selectedElement.properties) {
+                const item = new PropertyTreeItem(`${prop.key}: ${prop.value}`, 'property', vscode.TreeItemCollapsibleState.None, this._getPropertyIcon(prop.type), undefined, prop);
+                item.command = {
+                    command: 'mauiProperties.editProperty',
+                    title: 'Uredi lastnost',
+                    arguments: [prop]
+                };
+                items.push(item);
             }
+            return Promise.resolve(items);
         }
         if (element.contextValue === 'element') {
             // Children of element in structure

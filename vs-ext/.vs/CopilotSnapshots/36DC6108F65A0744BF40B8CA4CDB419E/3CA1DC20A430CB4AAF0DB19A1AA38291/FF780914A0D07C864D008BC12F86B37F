@@ -1,0 +1,10 @@
+﻿<Project>
+  <PropertyGroup>
+    <!-- Ensure NU1603 from Microsoft.VSSDK.BuildTools is resolved to the analyzer version found -->
+    <NoWarn>$(NoWarn)</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Pin Microsoft.VisualStudio.SDK.Analyzers to the resolved version to avoid NU1603 warnings -->
+    <PackageVersion Include="Microsoft.VisualStudio.SDK.Analyzers" Version="17.7.22" />
+  </ItemGroup>
+</Project>

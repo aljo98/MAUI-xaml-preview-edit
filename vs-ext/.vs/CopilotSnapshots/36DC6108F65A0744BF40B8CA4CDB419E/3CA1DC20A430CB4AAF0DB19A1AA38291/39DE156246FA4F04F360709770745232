@@ -1,0 +1,10 @@
+﻿<Project>
+  <PropertyGroup>
+    <!-- Suppress NU1603 warnings about package dependency resolution -->
+    <NoWarn>$(NoWarn);NU1603</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- Pin Microsoft.VisualStudio.SDK.Analyzers to the resolved version to avoid resolution mismatches -->
+    <PackageVersion Include="Microsoft.VisualStudio.SDK.Analyzers" Version="17.7.22" />
+  </ItemGroup>
+</Project>

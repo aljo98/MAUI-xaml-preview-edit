@@ -1,8 +1,8 @@
 using System;
 using System.Runtime.InteropServices;
 using System.Threading;
-using Community.VisualStudio.Toolkit;
 using Microsoft.VisualStudio.Shell;
+using Microsoft.VisualStudio.Shell.Interop;
 using Task = System.Threading.Tasks.Task;
 
 namespace MauiXamlPreviewVsix
@@ -18,20 +18,20 @@ namespace MauiXamlPreviewVsix
 
     protected override async Task InitializeAsync(CancellationToken cancellationToken, IProgress<ServiceProgressData> progress)
     {
-      await this.RegisterCommandsAsync();
-    }
-
-    private async Task RegisterCommandsAsync()
-    {
-      await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-      var cmd = new Community.VisualStudio.Toolkit.ToolkitCommand(new Guid("7B0F8A5A-4B0C-4E6A-9B1B-5A1F3F86B5E1"), 0);
-      cmd.Executed += async (s, e) => await ShowToolWindowAsync();
+      await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync(cancellationToken);
     }
 
     public async Task ShowToolWindowAsync()
     {
       await ThreadHelper.JoinableTaskFactory.SwitchToMainThreadAsync();
-      var window = await this.ShowToolWindowAsync(typeof(PreviewToolWindow), 0, true, DisposalToken);
+      var window = this.FindToolWindow(typeof(PreviewToolWindow), 0, true);
+      if (window?.Frame == null)
+      {
+        throw new NotSupportedException("Cannot create tool window");
+      }
+
+      var windowFrame = (IVsWindowFrame)window.Frame;
+      Microsoft.VisualStudio.ErrorHandler.ThrowOnFailure(windowFrame.Show());
     }
   }
 }

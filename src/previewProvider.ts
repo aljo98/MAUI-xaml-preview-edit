@@ -57,6 +57,8 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
     private _elementMap: Map<string, { startLine: number; endLine: number; elementName: string }> = new Map();
     private _propertiesProvider: MauiPropertiesProvider | undefined;
     private _propertiesTreeView: vscode.TreeView<PropertyTreeItem> | undefined;
+    private _structureProvider: MauiPropertiesProvider | undefined;
+    private _structureTreeView: vscode.TreeView<PropertyTreeItem> | undefined;
 
     private _resourceManager: ResourceManager;
     private _platformManager: PlatformManager;
@@ -139,8 +141,14 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
 
     public setPropertiesProvider(provider: MauiPropertiesProvider, treeView?: vscode.TreeView<PropertyTreeItem>) {
         this._propertiesProvider = provider;
-        this._propertiesTreeView = treeView;
+        this._propertiesTreeView = treeView; // kept for backward compatibility, not used for reveal anymore
         console.log('[PreviewProvider] Properties provider set');
+    }
+
+    public setStructureProvider(provider: MauiPropertiesProvider, treeView: vscode.TreeView<PropertyTreeItem>) {
+        this._structureProvider = provider;
+        this._structureTreeView = treeView;
+        console.log('[PreviewProvider] Structure provider set');
     }
 
     public updateElementProperty(property: ElementProperty, newValue: string) {
@@ -232,6 +240,30 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         }
     }
 
+    // PUBLIC: Select element by id from outside (tree/cmd)
+    public async selectElementById(elementId: string) {
+        if (!elementId) return;
+        await this._handleElementSelection(elementId);
+        // also instruct webview to mark as selected
+        this._currentPanel?.webview.postMessage({ type: 'selectElement', elementId });
+    }
+
+    // PUBLIC: Select element based on caret line in active XAML
+    public async selectElementAtLine(line: number) {
+        if (!this._currentDocument) return;
+        let bestId: string | undefined;
+        let bestSpan = Number.POSITIVE_INFINITY;
+        for (const [id, info] of this._elementMap.entries()) {
+            if (line >= info.startLine && line <= info.endLine) {
+                const span = info.endLine - info.startLine;
+                if (span < bestSpan) { bestSpan = span; bestId = id; }
+            }
+        }
+        if (bestId) {
+            await this.selectElementById(bestId);
+        }
+    }
+
     private _configureWebview(webview: vscode.Webview) {
         webview.options = {
             enableScripts: true,
@@ -312,7 +344,33 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
 
         await this._focusPropertiesView();
         this._sendElementPropertiesToSidebar(elementId);
+        // NEW: reveal in tree view
+        await this._revealElementInTree(elementId);
         this._applyViewModeToWebview(elementId);
+        // Ensure selection is reflected in DOM
+        this._currentPanel?.webview.postMessage({ type: 'selectElement', elementId });
+    }
+
+    private async _revealElementInTree(elementId: string) {
+        try {
+            const provider = this._structureProvider ?? this._propertiesProvider;
+            const tree = this._structureTreeView ?? this._propertiesTreeView;
+            if (!provider || !tree) return;
+            const anyProvider: any = provider as any;
+            const item = typeof anyProvider.getTreeItemById === 'function' ? anyProvider.getTreeItemById(elementId) : undefined;
+            if (item) {
+                await tree.reveal(item, { expand: true, focus: true, select: true });
+            } else {
+                provider.refresh();
+                await new Promise(r => setTimeout(r, 80));
+                const item2 = typeof anyProvider.getTreeItemById === 'function' ? anyProvider.getTreeItemById(elementId) : undefined;
+                if (item2) {
+                    await tree.reveal(item2, { expand: true, focus: true, select: true });
+                }
+            }
+        } catch (err) {
+            console.warn('[PreviewProvider] reveal in tree failed', err);
+        }
     }
 
     private async _handlePlatformSwitch(platform: string) {
@@ -358,17 +416,22 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
     }
 
     private _sendPropertiesDataToSidebar() {
-        if (!this._propertiesProvider) {
+        if (!this._propertiesProvider && !this._structureProvider) {
             return;
         }
 
-        this._propertiesProvider.setElements(this._xamlElements);
+        if (this._propertiesProvider) {
+            this._propertiesProvider.setElements(this._xamlElements);
+        }
+        if (this._structureProvider) {
+            this._structureProvider.setElements(this._xamlElements);
+        }
 
         const selectedElement = this._currentSelectedElementId
             ? this._findXamlElementById(this._currentSelectedElementId, this._xamlElements)
             : this._xamlElements[0];
 
-        this._propertiesProvider.setSelectedElement(selectedElement);
+        this._propertiesProvider?.setSelectedElement(selectedElement);
 
         if (!this._currentSelectedElementId && selectedElement) {
             this._currentSelectedElementId = selectedElement.id;
@@ -1283,6 +1346,17 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
             } catch (e) {
                 console.warn('[Webview] Failed to apply property update', e);
             }
+        }
+
+        if (message.type === 'selectElement') {
+            const root = document.querySelector('.xaml-root');
+            if (!root) return;
+            const target = root.querySelector('[data-element-id="' + message.elementId + '"]');
+            if (!target) return;
+            document.querySelectorAll('.maui-element.selected').forEach(el => el.classList.remove('selected'));
+            target.classList.add('selected');
+            target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            applyViewMode(currentViewMode, message.elementId);
         }
     });
 
