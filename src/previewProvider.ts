@@ -49,6 +49,7 @@ const COLOR_NAME_MAP: Record<string, string> = {
 
 export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
     private static readonly viewType = 'mauiXamlPreview';
+    private static _listenerCount = 0;
 
     private readonly _extensionUri: vscode.Uri;
     private _currentPanel: vscode.WebviewPanel | undefined;
@@ -167,7 +168,13 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
 
     public async deserializeWebviewPanel(webviewPanel: vscode.WebviewPanel): Promise<void> {
         this._currentPanel = webviewPanel;
-        this._configureWebview(webviewPanel.webview);
+        const disp = this._configureWebview(webviewPanel.webview);
+        // ensure listener disposed and panel cleared when panel is closed
+        webviewPanel.onDidDispose(() => {
+            try { disp.dispose(); } catch (e) { /* ignore */ }
+            this._currentPanel = undefined;
+            console.log('[PreviewProvider] Deserialized panel disposed');
+        }, null);
     }
 
     public async openPreview(document: vscode.TextDocument) {
@@ -197,10 +204,10 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
             }
         );
 
-        this._configureWebview(this._currentPanel.webview);
+        const disp = this._configureWebview(this._currentPanel.webview);
         await this.updatePreview(document);
-
         this._currentPanel.onDidDispose(() => {
+            try { disp.dispose(); } catch (e) { /* ignore */ }
             this._currentPanel = undefined;
             console.log('[PreviewProvider] Panel disposed');
         }, null);
@@ -264,21 +271,26 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         }
     }
 
-    private _configureWebview(webview: vscode.Webview) {
+    private _configureWebview(webview: vscode.Webview): vscode.Disposable {
         webview.options = {
             enableScripts: true,
             localResourceRoots: [this._extensionUri]
         };
 
-        webview.onDidReceiveMessage(async (message) => {
-            console.log('[PreviewProvider] Received message:', message.command, message);
+        MauiXamlPreviewProvider._listenerCount++;
+        console.log(`[PreviewProvider] Listener count increased to: ${MauiXamlPreviewProvider._listenerCount}`);
 
-            switch (message.command) {
+        const messageDisposable = webview.onDidReceiveMessage(async (message) => {
+            const cmd = message?.command ?? message?.type ?? message?.cmd;
+            console.log('[PreviewProvider] Received message:', cmd, message);
+
+            switch (cmd) {
                 case 'elementSelected':
                     await this._handleElementSelection(message.elementId, message.line);
                     break;
                 case 'switchPlatform':
-                    await this._handlePlatformSwitch(message.platform);
+                    // accept either 'platform' or 'platformName' keys coming from webview
+                    await this._handlePlatformSwitch(message.platform ?? message.platformName ?? message.value);
                     break;
                 case 'zoom':
                     this._handleZoom(message.action, message.value);
@@ -294,11 +306,20 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                     }, 50);
                     break;
                 default:
-                    console.warn('[PreviewProvider] Unknown command:', message.command);
+                    console.warn('[PreviewProvider] Unknown command/type:', cmd, message);
             }
         });
 
         console.log('[PreviewProvider] Webview configured');
+
+        // Wrap the disposable to decrement counter when disposed
+        return {
+            dispose: () => {
+                messageDisposable.dispose();
+                MauiXamlPreviewProvider._listenerCount--;
+                console.log(`[PreviewProvider] Listener count decreased to: ${MauiXamlPreviewProvider._listenerCount}`);
+            }
+        };
     }
 
     private async _handleElementSelection(elementId: string, rawLine?: any) {
@@ -377,9 +398,27 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         if (!platform) {
             return;
         }
+        console.log(`[PreviewProvider] Switching to platform (raw): ${platform}`);
 
-        console.log(`[PreviewProvider] Switching to platform: ${platform}`);
-        if (this._platformManager.setPlatform(platform)) {
+        // Normalize common labels/aliases coming from the webview buttons
+        const normalized = (platform || '').toString().trim();
+        const map: Record<string, string> = {
+            'android': 'Android',
+            'android phone': 'Android',
+            'androidphone': 'Android',
+            'ios': 'iOS',
+            'iphone': 'iOS',
+            'macos': 'macOS',
+            'macos desktop': 'macOS',
+            'windows': 'Windows',
+            'windows desktop': 'Windows'
+        };
+
+        const key = map[normalized.toLowerCase()] || normalized;
+
+        console.log(`[PreviewProvider] Switching to platform (mapped): ${key}`);
+
+        if (this._platformManager.setPlatform(key)) {
             if (this._currentDocument) {
                 await this.updatePreview(this._currentDocument);
             }
@@ -436,12 +475,20 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         if (!this._currentSelectedElementId && selectedElement) {
             this._currentSelectedElementId = selectedElement.id;
         }
+        // Ensure tree views refresh to pick up new items and caches
+        try {
+            this._propertiesProvider?.refresh();
+            this._structureProvider?.refresh();
+        } catch (err) {
+            // ignore
+        }
     }
 
     private async _focusPropertiesView() {
         try {
+            // Show the MAUI Designer container in the activity bar. Focusing the specific tree
+            // is handled via tree.reveal elsewhere; avoid calling a non-existent focus command.
             await vscode.commands.executeCommand('workbench.view.extension.maui-designer');
-            await vscode.commands.executeCommand('mauiProperties.focus');
         } catch (error) {
             console.warn('[PreviewProvider] Unable to focus properties view:', error);
         }
@@ -1077,6 +1124,7 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
 </div>
 <script>
     const vscode = acquireVsCodeApi();
+    window.vscode = vscode; // Make vscode API available globally for platform script
     ${platformSwitchScript}
     ${zoomScript}
 

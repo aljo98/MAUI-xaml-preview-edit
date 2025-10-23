@@ -133,8 +133,13 @@ class MauiXamlPreviewProvider {
     }
     setPropertiesProvider(provider, treeView) {
         this._propertiesProvider = provider;
-        this._propertiesTreeView = treeView;
+        this._propertiesTreeView = treeView; // kept for backward compatibility, not used for reveal anymore
         console.log('[PreviewProvider] Properties provider set');
+    }
+    setStructureProvider(provider, treeView) {
+        this._structureProvider = provider;
+        this._structureTreeView = treeView;
+        console.log('[PreviewProvider] Structure provider set');
     }
     updateElementProperty(property, newValue) {
         if (this._currentPanel) {
@@ -150,7 +155,16 @@ class MauiXamlPreviewProvider {
     }
     async deserializeWebviewPanel(webviewPanel) {
         this._currentPanel = webviewPanel;
-        this._configureWebview(webviewPanel.webview);
+        const disp = this._configureWebview(webviewPanel.webview);
+        // ensure listener disposed and panel cleared when panel is closed
+        webviewPanel.onDidDispose(() => {
+            try {
+                disp.dispose();
+            }
+            catch (e) { /* ignore */ }
+            this._currentPanel = undefined;
+            console.log('[PreviewProvider] Deserialized panel disposed');
+        }, null);
     }
     async openPreview(document) {
         console.log('[PreviewProvider] Opening preview for:', document.fileName);
@@ -172,9 +186,13 @@ class MauiXamlPreviewProvider {
             retainContextWhenHidden: true,
             localResourceRoots: [this._extensionUri]
         });
-        this._configureWebview(this._currentPanel.webview);
+        const disp = this._configureWebview(this._currentPanel.webview);
         await this.updatePreview(document);
         this._currentPanel.onDidDispose(() => {
+            try {
+                disp.dispose();
+            }
+            catch (e) { /* ignore */ }
             this._currentPanel = undefined;
             console.log('[PreviewProvider] Panel disposed');
         }, null);
@@ -206,19 +224,48 @@ class MauiXamlPreviewProvider {
             this._showErrorMessage('Failed to update preview: ' + error);
         }
     }
+    // PUBLIC: Select element by id from outside (tree/cmd)
+    async selectElementById(elementId) {
+        if (!elementId)
+            return;
+        await this._handleElementSelection(elementId);
+        // also instruct webview to mark as selected
+        this._currentPanel?.webview.postMessage({ type: 'selectElement', elementId });
+    }
+    // PUBLIC: Select element based on caret line in active XAML
+    async selectElementAtLine(line) {
+        if (!this._currentDocument)
+            return;
+        let bestId;
+        let bestSpan = Number.POSITIVE_INFINITY;
+        for (const [id, info] of this._elementMap.entries()) {
+            if (line >= info.startLine && line <= info.endLine) {
+                const span = info.endLine - info.startLine;
+                if (span < bestSpan) {
+                    bestSpan = span;
+                    bestId = id;
+                }
+            }
+        }
+        if (bestId) {
+            await this.selectElementById(bestId);
+        }
+    }
     _configureWebview(webview) {
         webview.options = {
             enableScripts: true,
             localResourceRoots: [this._extensionUri]
         };
-        webview.onDidReceiveMessage(async (message) => {
-            console.log('[PreviewProvider] Received message:', message.command, message);
-            switch (message.command) {
+        const messageDisposable = webview.onDidReceiveMessage(async (message) => {
+            const cmd = message?.command ?? message?.type ?? message?.cmd;
+            console.log('[PreviewProvider] Received message:', cmd, message);
+            switch (cmd) {
                 case 'elementSelected':
                     await this._handleElementSelection(message.elementId, message.line);
                     break;
                 case 'switchPlatform':
-                    await this._handlePlatformSwitch(message.platform);
+                    // accept either 'platform' or 'platformName' keys coming from webview
+                    await this._handlePlatformSwitch(message.platform ?? message.platformName ?? message.value);
                     break;
                 case 'zoom':
                     this._handleZoom(message.action, message.value);
@@ -234,10 +281,11 @@ class MauiXamlPreviewProvider {
                     }, 50);
                     break;
                 default:
-                    console.warn('[PreviewProvider] Unknown command:', message.command);
+                    console.warn('[PreviewProvider] Unknown command/type:', cmd, message);
             }
         });
         console.log('[PreviewProvider] Webview configured');
+        return messageDisposable;
     }
     async _handleElementSelection(elementId, rawLine) {
         if (!elementId) {
@@ -271,14 +319,57 @@ class MauiXamlPreviewProvider {
         }
         await this._focusPropertiesView();
         this._sendElementPropertiesToSidebar(elementId);
+        // NEW: reveal in tree view
+        await this._revealElementInTree(elementId);
         this._applyViewModeToWebview(elementId);
+        // Ensure selection is reflected in DOM
+        this._currentPanel?.webview.postMessage({ type: 'selectElement', elementId });
+    }
+    async _revealElementInTree(elementId) {
+        try {
+            const provider = this._structureProvider ?? this._propertiesProvider;
+            const tree = this._structureTreeView ?? this._propertiesTreeView;
+            if (!provider || !tree)
+                return;
+            const anyProvider = provider;
+            const item = typeof anyProvider.getTreeItemById === 'function' ? anyProvider.getTreeItemById(elementId) : undefined;
+            if (item) {
+                await tree.reveal(item, { expand: true, focus: true, select: true });
+            }
+            else {
+                provider.refresh();
+                await new Promise(r => setTimeout(r, 80));
+                const item2 = typeof anyProvider.getTreeItemById === 'function' ? anyProvider.getTreeItemById(elementId) : undefined;
+                if (item2) {
+                    await tree.reveal(item2, { expand: true, focus: true, select: true });
+                }
+            }
+        }
+        catch (err) {
+            console.warn('[PreviewProvider] reveal in tree failed', err);
+        }
     }
     async _handlePlatformSwitch(platform) {
         if (!platform) {
             return;
         }
-        console.log(`[PreviewProvider] Switching to platform: ${platform}`);
-        if (this._platformManager.setPlatform(platform)) {
+        console.log(`[PreviewProvider] Switching to platform (raw): ${platform}`);
+        // Normalize common labels/aliases coming from the webview buttons
+        const normalized = (platform || '').toString().trim();
+        const map = {
+            'android': 'Android',
+            'android phone': 'Android',
+            'androidphone': 'Android',
+            'ios': 'iOS',
+            'iphone': 'iOS',
+            'macos': 'macOS',
+            'macos desktop': 'macOS',
+            'windows': 'Windows',
+            'windows desktop': 'Windows'
+        };
+        const key = map[normalized.toLowerCase()] || normalized;
+        console.log(`[PreviewProvider] Switching to platform (mapped): ${key}`);
+        if (this._platformManager.setPlatform(key)) {
             if (this._currentDocument) {
                 await this.updatePreview(this._currentDocument);
             }
@@ -313,16 +404,29 @@ class MauiXamlPreviewProvider {
         });
     }
     _sendPropertiesDataToSidebar() {
-        if (!this._propertiesProvider) {
+        if (!this._propertiesProvider && !this._structureProvider) {
             return;
         }
-        this._propertiesProvider.setElements(this._xamlElements);
+        if (this._propertiesProvider) {
+            this._propertiesProvider.setElements(this._xamlElements);
+        }
+        if (this._structureProvider) {
+            this._structureProvider.setElements(this._xamlElements);
+        }
         const selectedElement = this._currentSelectedElementId
             ? this._findXamlElementById(this._currentSelectedElementId, this._xamlElements)
             : this._xamlElements[0];
-        this._propertiesProvider.setSelectedElement(selectedElement);
+        this._propertiesProvider?.setSelectedElement(selectedElement);
         if (!this._currentSelectedElementId && selectedElement) {
             this._currentSelectedElementId = selectedElement.id;
+        }
+        // Ensure tree views refresh to pick up new items and caches
+        try {
+            this._propertiesProvider?.refresh();
+            this._structureProvider?.refresh();
+        }
+        catch (err) {
+            // ignore
         }
     }
     async _focusPropertiesView() {
@@ -1189,6 +1293,17 @@ class MauiXamlPreviewProvider {
             } catch (e) {
                 console.warn('[Webview] Failed to apply property update', e);
             }
+        }
+
+        if (message.type === 'selectElement') {
+            const root = document.querySelector('.xaml-root');
+            if (!root) return;
+            const target = root.querySelector('[data-element-id="' + message.elementId + '"]');
+            if (!target) return;
+            document.querySelectorAll('.maui-element.selected').forEach(el => el.classList.remove('selected'));
+            target.classList.add('selected');
+            target.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+            applyViewMode(currentViewMode, message.elementId);
         }
     });
 

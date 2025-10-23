@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj": {}
+    "H:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj": {}
   },
   "projects": {
-    "J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj": {
+    "H:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj",
+        "projectUniqueName": "H:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj",
         "projectName": "MauiXamlPreviewVsix",
-        "projectPath": "J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj",
-        "packagesPath": "C:\\Users\\Aljazf\\.nuget\\packages\\",
-        "outputPath": "J:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\obj\\",
+        "projectPath": "H:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj",
+        "packagesPath": "C:\\Users\\fajdi\\.nuget\\packages\\",
+        "outputPath": "H:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\obj\\",
         "projectStyle": "PackageReference",
         "skipContentFileWrite": true,
         "UsingMicrosoftNETSdk": false,
@@ -19,7 +19,7 @@
           "C:\\Program Files (x86)\\Microsoft Visual Studio\\Shared\\NuGetPackages"
         ],
         "configFilePaths": [
-          "C:\\Users\\Aljazf\\AppData\\Roaming\\NuGet\\NuGet.Config",
+          "C:\\Users\\fajdi\\AppData\\Roaming\\NuGet\\NuGet.Config",
           "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.FallbackLocation.config",
           "C:\\Program Files (x86)\\NuGet\\Config\\Microsoft.VisualStudio.Offline.config"
         ],

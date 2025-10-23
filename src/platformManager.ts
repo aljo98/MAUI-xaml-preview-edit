@@ -307,16 +307,17 @@ export class PlatformManager {
   public generatePlatformSwitchScript(): string {
     return `
       function switchPlatform(platformName) {
-                console.log('[PlatformManager] Switching to platform:', platformName);
-                try {
-                    const vscode = acquireVsCodeApi();
-                    vscode.postMessage({
-                        command: 'switchPlatform',
-                        platform: platformName
-                    });
-                } catch (err) {
-                    console.warn('[PlatformManager] VS Code API not available', err);
-                }
+        console.log('[PlatformManager] Switching to platform:', platformName);
+        try {
+          // Use the established window.vscode global variable set in the main script
+          if (window.vscode && typeof window.vscode.postMessage === 'function') {
+            window.vscode.postMessage({ command: 'switchPlatform', platform: platformName });
+          } else {
+            console.warn('[PlatformManager] window.vscode not available to post platform switch');
+          }
+        } catch (err) {
+          console.warn('[PlatformManager] Error while posting platform switch', err);
+        }
                 document.querySelectorAll('.platform-btn').forEach(btn => btn.classList.remove('active'));
                 const activeBtn = document.querySelector('[data-platform="' + platformName + '"]');
                 if (activeBtn) activeBtn.classList.add('active');

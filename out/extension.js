@@ -43,16 +43,36 @@ async function activate(context) {
     // Registracija preview providerja
     const previewProvider = new previewProvider_1.MauiXamlPreviewProvider(context.extensionUri);
     const providerRegistration = vscode.window.registerWebviewPanelSerializer('mauiXamlPreview', previewProvider);
-    // Registracija properties sidebar providerja (dynamic import to avoid circular issues)
+    // Registracija sidebar providerjev (3 ločeni pogledi kot pri GitHub Changes/Graph)
     const propertiesModule = await Promise.resolve().then(() => __importStar(require('./propertiesProvider')));
-    const propertiesProvider = new propertiesModule.MauiPropertiesProvider(context.extensionUri);
+    const propertiesProvider = new propertiesModule.MauiPropertiesProvider(context.extensionUri, 'props');
+    const templatesProvider = new propertiesModule.MauiPropertiesProvider(context.extensionUri, 'templates');
+    const structureProvider = new propertiesModule.MauiPropertiesProvider(context.extensionUri, 'structure');
+    // Ensure providers have correct modes (defensive in case constructor defaulting changes)
+    propertiesProvider.setMode('props');
+    templatesProvider.setMode('templates');
+    structureProvider.setMode('structure');
     const propertiesTreeView = vscode.window.createTreeView('mauiProperties', {
         treeDataProvider: propertiesProvider,
+        showCollapseAll: false
+    });
+    const templatesTreeView = vscode.window.createTreeView('mauiTemplates', {
+        treeDataProvider: templatesProvider,
+        showCollapseAll: false
+    });
+    const structureTreeView = vscode.window.createTreeView('mauiStructure', {
+        treeDataProvider: structureProvider,
         showCollapseAll: true
     });
-    // Povezava med preview in properties providerjem
+    // Also register as TreeDataProviders explicitly (defensive) so VS Code always has a provider
+    const regProps = vscode.window.registerTreeDataProvider('mauiProperties', propertiesProvider);
+    const regTemplates = vscode.window.registerTreeDataProvider('mauiTemplates', templatesProvider);
+    const regStructure = vscode.window.registerTreeDataProvider('mauiStructure', structureProvider);
+    console.log('[Extension] Registered tree data providers for properties, templates and structure');
+    // Povezava med preview in providerji
     previewProvider.setPropertiesProvider(propertiesProvider, propertiesTreeView);
-    // Decoration type for highlighting selected elements in code
+    previewProvider.setStructureProvider(structureProvider, structureTreeView);
+    // Decoration type for highlighting selected elements v kodi
     const elementHighlightDecoration = vscode.window.createTextEditorDecorationType({
         backgroundColor: 'rgba(255, 152, 0, 0.2)',
         border: '2px solid #ff9800',
@@ -60,6 +80,15 @@ async function activate(context) {
     });
     // Inicializacija entity managerja
     const entityManager = new entityManager_1.EntityManager();
+    // Template manager
+    const { TemplateManager } = await Promise.resolve().then(() => __importStar(require('./templateManager')));
+    const templateManager = new TemplateManager(context.extensionUri);
+    await templateManager.loadTemplates();
+    templatesProvider.setTemplates(templateManager.getTemplates());
+    // Force refresh so the view reflects templates immediately
+    templatesProvider.refresh();
+    // ensure registered disposables are tracked
+    context.subscriptions.push(regProps, regTemplates, regStructure);
     // Status bar gumb za hiter dostop do preview-ja
     const previewStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
     previewStatusBar.text = '$(preview) MAUI Preview';
@@ -265,6 +294,31 @@ async function activate(context) {
             vscode.window.showInformationMessage(`Dodal sem ${selectedEntity.entity.name}!`);
         }
     });
+    // NEW: Insert template example command
+    const insertTemplateCommand = vscode.commands.registerCommand('mauiTemplates.insertTemplate', async (template) => {
+        if (!template)
+            return;
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || !editor.document.fileName.toLowerCase().endsWith('.xaml')) {
+            vscode.window.showWarningMessage('Odprite XAML datoteko, da vstavite template.');
+            return;
+        }
+        const pos = editor.selection.active;
+        await editor.edit(edit => edit.insert(pos, `\n${template.xaml}\n`));
+        await editor.document.save();
+        vscode.window.showInformationMessage(`Vstavljen template: ${template.name}`);
+        // osveži preview
+        previewProvider.updatePreview(editor.document);
+    });
+    // NEW: Select element by ID command (from Structure tree clicks)
+    const selectElementByIdCommand = vscode.commands.registerCommand('mauiDesigner.selectElementById', async (elementId) => {
+        try {
+            await previewProvider.selectElementById(elementId);
+        }
+        catch (err) {
+            console.warn('selectElementById failed', err);
+        }
+    });
     // Avtomatsko osveževanje preview-ja ob spremembah
     const onDidChangeDocument = vscode.workspace.onDidChangeTextDocument((event) => {
         if (event.document.fileName.endsWith('.xaml')) {
@@ -281,8 +335,16 @@ async function activate(context) {
         }
         updatePreviewStatusBar(editor);
     });
+    // NEW: Premik kurzorja v XAML → izberi ustrezen element
+    const onDidChangeSelection = vscode.window.onDidChangeTextEditorSelection(async (e) => {
+        const doc = e.textEditor?.document;
+        if (!doc || !doc.fileName.toLowerCase().endsWith('.xaml'))
+            return;
+        const line = e.selections[0]?.active.line ?? 0;
+        await previewProvider.selectElementAtLine(line);
+    });
     // Registracija vseh dispozablov
-    context.subscriptions.push(providerRegistration, propertiesTreeView, openPreviewCommand, editPropertyCommand, addPropertyCommand, addEntityCommand, onDidChangeDocument, onDidChangeActiveEditor);
+    context.subscriptions.push(providerRegistration, propertiesTreeView, templatesTreeView, structureTreeView, openPreviewCommand, editPropertyCommand, addPropertyCommand, addEntityCommand, insertTemplateCommand, selectElementByIdCommand, onDidChangeDocument, onDidChangeActiveEditor, onDidChangeSelection);
     // Avtomatsko odpiranje preview-ja če je XAML datoteka odprta
     if (vscode.window.activeTextEditor?.document.fileName.endsWith('.xaml')) {
         previewStatusBar.show();

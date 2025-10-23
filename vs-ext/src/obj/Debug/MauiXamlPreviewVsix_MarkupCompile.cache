@@ -4,7 +4,7 @@
 library
 C#
 .cs
-J:\AF\maui-xaml-preview\MAUI-xaml-preview-edit\vs-ext\src\obj\Debug\
+j:\AF\maui-xaml-preview\MAUI-xaml-preview-edit\vs-ext\src\obj\Debug\
 MauiXamlPreviewVsix
 none
 false
@@ -12,7 +12,7 @@ DEBUG;TRACE
 
 1583926187
 4725369181
-3139577978
+4-1942510640
 221-578607346
 PreviewToolWindowControl.xaml;
 

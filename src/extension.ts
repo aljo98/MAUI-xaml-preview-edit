@@ -18,6 +18,11 @@ export async function activate(context: vscode.ExtensionContext) {
     const templatesProvider = new propertiesModule.MauiPropertiesProvider(context.extensionUri, 'templates');
     const structureProvider = new propertiesModule.MauiPropertiesProvider(context.extensionUri, 'structure');
 
+    // Ensure providers have correct modes (defensive in case constructor defaulting changes)
+    propertiesProvider.setMode('props');
+    templatesProvider.setMode('templates');
+    structureProvider.setMode('structure');
+
     const propertiesTreeView = vscode.window.createTreeView('mauiProperties', {
         treeDataProvider: propertiesProvider,
         showCollapseAll: false
@@ -30,6 +35,12 @@ export async function activate(context: vscode.ExtensionContext) {
         treeDataProvider: structureProvider,
         showCollapseAll: true
     });
+
+    // Also register as TreeDataProviders explicitly (defensive) so VS Code always has a provider
+    const regProps = vscode.window.registerTreeDataProvider('mauiProperties', propertiesProvider);
+    const regTemplates = vscode.window.registerTreeDataProvider('mauiTemplates', templatesProvider);
+    const regStructure = vscode.window.registerTreeDataProvider('mauiStructure', structureProvider);
+    console.log('[Extension] Registered tree data providers for properties, templates and structure');
 
     // Povezava med preview in providerji
     previewProvider.setPropertiesProvider(propertiesProvider, propertiesTreeView);
@@ -50,6 +61,10 @@ export async function activate(context: vscode.ExtensionContext) {
     const templateManager = new TemplateManager(context.extensionUri);
     await templateManager.loadTemplates();
     templatesProvider.setTemplates(templateManager.getTemplates());
+    // Force refresh so the view reflects templates immediately
+    templatesProvider.refresh();
+    // ensure registered disposables are tracked
+    context.subscriptions.push(regProps, regTemplates, regStructure);
 
     // Status bar gumb za hiter dostop do preview-ja
     const previewStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
