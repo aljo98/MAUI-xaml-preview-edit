@@ -36,6 +36,7 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MauiXamlPreviewProvider = void 0;
 const vscode = __importStar(require("vscode"));
 const path = __importStar(require("path"));
+const fs = __importStar(require("fs"));
 const fast_xml_parser_1 = require("fast-xml-parser");
 const resourceManager_1 = require("./resourceManager");
 const platformManager_1 = require("./platformManager");
@@ -88,6 +89,32 @@ class MauiXamlPreviewProvider {
             allowBooleanAttributes: true
         });
         console.log('[PreviewProvider] Initialized with managers');
+    }
+    /** Build local resource roots including extension, workspace and current document directory for image loading */
+    _getLocalResourceRoots(doc) {
+        const roots = [this._extensionUri];
+        try {
+            const workspaceFolders = vscode.workspace.workspaceFolders;
+            if (workspaceFolders) {
+                for (const f of workspaceFolders) {
+                    roots.push(f.uri);
+                    // Common MAUI resource folders
+                    roots.push(vscode.Uri.joinPath(f.uri, 'Resources'));
+                    roots.push(vscode.Uri.joinPath(f.uri, 'Resources', 'Images'));
+                }
+            }
+            if (doc) {
+                const dir = path.dirname(doc.uri.fsPath);
+                roots.push(vscode.Uri.file(dir));
+            }
+        }
+        catch (e) {
+            console.warn('[PreviewProvider] Failed building localResourceRoots', e);
+        }
+        // Deduplicate by toString
+        const seen = new Set();
+        return roots.filter(r => { const k = r.toString(); if (seen.has(k))
+            return false; seen.add(k); return true; });
     }
     // Provide color suggestions for property editors
     getColorSuggestions() {
@@ -184,7 +211,7 @@ class MauiXamlPreviewProvider {
         this._currentPanel = vscode.window.createWebviewPanel(MauiXamlPreviewProvider.viewType, `MAUI Preview: ${path.basename(document.fileName)}`, vscode.ViewColumn.Beside, {
             enableScripts: true,
             retainContextWhenHidden: true,
-            localResourceRoots: [this._extensionUri]
+            localResourceRoots: this._getLocalResourceRoots(document)
         });
         const disp = this._configureWebview(this._currentPanel.webview);
         await this.updatePreview(document);
@@ -254,8 +281,10 @@ class MauiXamlPreviewProvider {
     _configureWebview(webview) {
         webview.options = {
             enableScripts: true,
-            localResourceRoots: [this._extensionUri]
+            localResourceRoots: this._getLocalResourceRoots(this._currentDocument)
         };
+        MauiXamlPreviewProvider._listenerCount++;
+        console.log(`[PreviewProvider] Listener count increased to: ${MauiXamlPreviewProvider._listenerCount}`);
         const messageDisposable = webview.onDidReceiveMessage(async (message) => {
             const cmd = message?.command ?? message?.type ?? message?.cmd;
             console.log('[PreviewProvider] Received message:', cmd, message);
@@ -285,7 +314,14 @@ class MauiXamlPreviewProvider {
             }
         });
         console.log('[PreviewProvider] Webview configured');
-        return messageDisposable;
+        // Wrap the disposable to decrement counter when disposed
+        return {
+            dispose: () => {
+                messageDisposable.dispose();
+                MauiXamlPreviewProvider._listenerCount--;
+                console.log(`[PreviewProvider] Listener count decreased to: ${MauiXamlPreviewProvider._listenerCount}`);
+            }
+        };
     }
     async _handleElementSelection(elementId, rawLine) {
         if (!elementId) {
@@ -310,6 +346,11 @@ class MauiXamlPreviewProvider {
                 const position = new vscode.Position(clampedLine, 0);
                 editor.selection = new vscode.Selection(position, position);
                 editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+                // Clear previous decorations first
+                if (this._elementHighlightDecoration) {
+                    editor.setDecorations(this._elementHighlightDecoration, []);
+                }
+                // Apply new decoration
                 if (this._elementHighlightDecoration && elementInfo) {
                     const endLine = Math.max(elementInfo.startLine, elementInfo.endLine);
                     const range = new vscode.Range(elementInfo.startLine, 0, endLine, editor.document.lineAt(endLine).text.length);
@@ -372,6 +413,10 @@ class MauiXamlPreviewProvider {
         if (this._platformManager.setPlatform(key)) {
             if (this._currentDocument) {
                 await this.updatePreview(this._currentDocument);
+                // Auto-fit to window after platform switch with a small delay to ensure rendering is complete
+                setTimeout(() => {
+                    this._currentPanel?.webview.postMessage({ type: 'fitToViewport' });
+                }, 150);
             }
         }
         else {
@@ -431,8 +476,9 @@ class MauiXamlPreviewProvider {
     }
     async _focusPropertiesView() {
         try {
+            // Show the MAUI Designer container in the activity bar. Focusing the specific tree
+            // is handled via tree.reveal elsewhere; avoid calling a non-existent focus command.
             await vscode.commands.executeCommand('workbench.view.extension.maui-designer');
-            await vscode.commands.executeCommand('mauiProperties.focus');
         }
         catch (error) {
             console.warn('[PreviewProvider] Unable to focus properties view:', error);
@@ -605,6 +651,9 @@ class MauiXamlPreviewProvider {
             case 'StrokeShape':
                 this._extractStrokeShape(element, rawValue);
                 break;
+            case 'Background':
+                this._extractBackgroundBrush(element, rawValue);
+                break;
             case 'Resources':
                 break;
             default:
@@ -663,6 +712,43 @@ class MauiXamlPreviewProvider {
             }
         }
     }
+    _extractBackgroundBrush(element, propertyValue) {
+        if (!propertyValue || typeof propertyValue !== 'object') {
+            return;
+        }
+        // Look for LinearGradientBrush
+        const linearBrush = propertyValue['LinearGradientBrush'];
+        if (linearBrush) {
+            const brushes = Array.isArray(linearBrush) ? linearBrush : [linearBrush];
+            for (const brush of brushes) {
+                if (brush && typeof brush === 'object') {
+                    const startPoint = brush['@_StartPoint'] || '0,0';
+                    const endPoint = brush['@_EndPoint'] || '1,1';
+                    // Extract gradient stops
+                    const gradientStops = [];
+                    const stopsValue = brush['GradientStop'];
+                    if (stopsValue) {
+                        const stops = Array.isArray(stopsValue) ? stopsValue : [stopsValue];
+                        for (const stop of stops) {
+                            if (stop && typeof stop === 'object') {
+                                const color = stop['@_Color'] || '';
+                                const offset = stop['@_Offset'] || '0';
+                                if (color) {
+                                    gradientStops.push({ color, offset });
+                                }
+                            }
+                        }
+                    }
+                    if (gradientStops.length > 0) {
+                        // Store gradient info in metadata
+                        element.metadata.gradientStops = gradientStops;
+                        element.metadata.gradientStartPoint = startPoint;
+                        element.metadata.gradientEndPoint = endPoint;
+                    }
+                }
+            }
+        }
+    }
     _finalizeElementAttributes(element) {
         const resolved = { ...element.attributes };
         const styleKey = this._extractResourceKey(resolved['Style']);
@@ -717,7 +803,8 @@ class MauiXamlPreviewProvider {
         const lineOffsets = this._calculateLineOffsets(xamlContent);
         let searchIndex = 0;
         const assign = (element) => {
-            const regex = new RegExp(`<${element.type}(?:[\n\r\s>])`, 'g');
+            // Match opening tag - could be self-closing or not
+            const regex = new RegExp(`<${element.type}(?:[\\n\\r\\s>])`, 'g');
             regex.lastIndex = searchIndex;
             const match = regex.exec(xamlContent);
             if (match) {
@@ -725,9 +812,25 @@ class MauiXamlPreviewProvider {
                 const startLine = this._getLineForIndex(startIndex, lineOffsets);
                 element.metadata.startIndex = startIndex;
                 element.metadata.startLine = startLine;
-                const closingTag = `</${element.type}>`;
-                const closingIndex = xamlContent.indexOf(closingTag, startIndex);
-                const endLine = closingIndex !== -1 ? this._getLineForIndex(closingIndex, lineOffsets) : startLine;
+                let endLine = startLine;
+                // Check if it's a self-closing tag
+                const remainingContent = xamlContent.substring(startIndex);
+                const tagEnd = remainingContent.indexOf('>');
+                if (tagEnd !== -1) {
+                    const tagContent = remainingContent.substring(0, tagEnd + 1);
+                    if (tagContent.trim().endsWith('/>')) {
+                        // Self-closing tag
+                        endLine = this._getLineForIndex(startIndex + tagEnd, lineOffsets);
+                    }
+                    else {
+                        // Look for closing tag
+                        const closingTag = `</${element.type}>`;
+                        const closingIndex = xamlContent.indexOf(closingTag, startIndex);
+                        if (closingIndex !== -1) {
+                            endLine = this._getLineForIndex(closingIndex + closingTag.length - 1, lineOffsets);
+                        }
+                    }
+                }
                 this._elementMap.set(element.id, {
                     startLine,
                     endLine,
@@ -871,11 +974,23 @@ class MauiXamlPreviewProvider {
     }
 
     .preview-viewport {
-        background: white;
-        border-radius: 12px;
+        background: #fafafa;
+        border-radius: 8px;
         padding: 20px;
-        box-shadow: 0 8px 24px rgba(15,22,33,0.1);
-        min-height: 420px;
+        box-shadow: 0 2px 8px rgba(15,22,33,0.08);
+        flex: 1;
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+        overflow: auto;
+        min-height: 500px;
+    }
+
+    .device-wrapper {
+        transition: transform 0.3s ease;
+        transform-origin: center top;
+        width: 100%;
+        height: 100%;
         display: flex;
         justify-content: center;
         align-items: flex-start;
@@ -885,6 +1000,9 @@ class MauiXamlPreviewProvider {
 
     .content-area {
         position: relative;
+        width: 100%;
+        height: 100%;
+        overflow: visible;
     }
 
     .xaml-root {
@@ -916,26 +1034,19 @@ class MauiXamlPreviewProvider {
     }
 
     .maui-stacklayout {
-        display: flex;
-        flex-direction: column;
-        gap: 8px;
-        width: 100%;
+        /* Layout set via inline styles */
     }
 
     .maui-stacklayout.is-horizontal {
-        flex-direction: row;
+        /* Handled by inline styles */
     }
 
     .maui-grid {
-        display: grid;
-        width: 100%;
-        gap: 8px;
+        /* Grid layout set via inline styles */
     }
 
     .maui-label {
         display: block;
-        padding: 2px 0;
-        color: #1f2933;
         white-space: pre-wrap;
     }
 
@@ -943,12 +1054,8 @@ class MauiXamlPreviewProvider {
         display: inline-flex;
         align-items: center;
         justify-content: center;
-        padding: 8px 18px;
-        border-radius: 8px;
-        border: none;
-        font-weight: 600;
-        background: #2563eb;
-        color: white;
+        cursor: pointer;
+    }
         box-shadow: 0 3px 10px rgba(37,99,235,0.25);
     }
 
@@ -957,21 +1064,57 @@ class MauiXamlPreviewProvider {
     }
 
     .maui-border {
-        border: 1px solid #d0d0d0;
-        border-radius: 10px;
-        padding: 12px;
-        background: #ffffff;
+        box-sizing: border-box;
+        /* All styles set via inline */
     }
 
     .maui-frame {
-        border-radius: 12px;
-        padding: 12px;
-        background: #ffffff;
-        box-shadow: 0 6px 16px rgba(15,22,33,0.08);
+        box-sizing: border-box;
+        /* All styles set via inline */
     }
 
     .maui-boxview {
+        display: block;
+        /* Size and colors set via inline */
+    }
+
+    .maui-entry {
+        outline: none;
+        box-sizing: border-box;
+        /* Other styles set via inline */
+    }
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    .maui-picker {
+        padding: 8px 12px;
+        border: 1px solid #d0d0d0;
+        border-radius: 6px;
+        font-size: 14px;
+        background: white;
+        cursor: pointer;
+    }
+
+    .maui-activityindicator {
+        display: flex;
+        align-items: center;
+        justify-content: center;
         min-height: 24px;
+    }
+
+    .activity-spinner {
+        border: 3px solid rgba(0,0,0,0.1);
+        border-top: 3px solid #007acc;
+        border-radius: 50%;
+        width: 24px;
+        height: 24px;
+        animation: spin 1s linear infinite;
+    }
+
+    @keyframes spin {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(360deg); }
     }
 
     .maui-scrollview {
@@ -1024,6 +1167,7 @@ class MauiXamlPreviewProvider {
 </div>
 <script>
     const vscode = acquireVsCodeApi();
+    window.vscode = vscode; // Make vscode API available globally for platform script
     ${platformSwitchScript}
     ${zoomScript}
 
@@ -1319,11 +1463,15 @@ class MauiXamlPreviewProvider {
         const classes = ['maui-element'];
         const typeClass = `maui-${element.type.toLowerCase()}`;
         classes.push(typeClass);
-        if (element.type === 'StackLayout') {
+        if (element.type === 'StackLayout' || element.type === 'HorizontalStackLayout') {
             const orientation = (element.resolvedAttributes['Orientation'] || '').toLowerCase();
-            if (orientation === 'horizontal') {
+            if (orientation === 'horizontal' || element.type === 'HorizontalStackLayout') {
                 classes.push('is-horizontal');
             }
+        }
+        // VerticalStackLayout is just like StackLayout but vertical (default)
+        if (element.type === 'VerticalStackLayout') {
+            classes.push('maui-stacklayout');
         }
         const style = this._buildInlineStyle(element);
         const styleAttr = style ? ` style="${style}"` : '';
@@ -1337,14 +1485,57 @@ class MauiXamlPreviewProvider {
                 return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>${text}</div>`;
             case 'Button':
                 return `<button class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>${text || 'Button'}</button>`;
-            case 'Entry':
-                return `<input class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr} value="${this._escapeHtml(text || '')}" placeholder="Entry" />`;
+            case 'Entry': {
+                const textValue = element.resolvedAttributes['Text'] ?? element.textContent;
+                const placeholder = element.resolvedAttributes['Placeholder'] || '';
+                const isPassword = element.resolvedAttributes['IsPassword'] === 'True';
+                const inputType = isPassword ? 'password' : 'text';
+                // Check if Text is a binding
+                let displayValue = '';
+                let displayPlaceholder = placeholder;
+                if (textValue && textValue.includes('{Binding')) {
+                    const bindingMatch = textValue.match(/\{Binding\s+([^}]+)\}/i);
+                    if (bindingMatch) {
+                        displayPlaceholder = bindingMatch[1];
+                    }
+                }
+                else {
+                    displayValue = textValue || '';
+                }
+                return `<input type="${inputType}" class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr} value="${this._escapeHtml(displayValue)}" placeholder="${this._escapeHtml(displayPlaceholder)}" />`;
+            }
             case 'Editor':
                 return `<textarea class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>${this._escapeHtml(text || '')}</textarea>`;
             case 'ScrollView':
                 return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}><div class="scroll-content">${childrenHtml}</div></div>`;
-            case 'Image':
-                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}><span class="binding-placeholder">${text || 'Image'}</span></div>`;
+            case 'Image': {
+                const source = element.resolvedAttributes['Source'];
+                if (source && !source.includes('{Binding')) {
+                    const webviewUri = this._getImageWebviewUri(source);
+                    if (webviewUri) {
+                        return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>
+                            <img src="${webviewUri}" alt="${text || 'Image'}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'; this.parentElement.innerHTML='<span class=\\'binding-placeholder\\'>Image not found</span>'" />
+                        </div>`;
+                    }
+                    else {
+                        return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}><span class="binding-placeholder">${source}</span></div>`;
+                    }
+                }
+                else {
+                    return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}><span class="binding-placeholder">${text || source || 'Image'}</span></div>`;
+                }
+            }
+            case 'ActivityIndicator':
+                const isRunning = element.resolvedAttributes['IsRunning'] === 'True';
+                const indicatorColor = this._resolveColor(element.resolvedAttributes['Color']) || '#007acc';
+                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>
+                    ${isRunning ? `<div class="activity-spinner" style="border-top-color: ${indicatorColor}"></div>` : ''}
+                </div>`;
+            case 'Picker':
+                const pickerTitle = element.resolvedAttributes['Title'] || 'Select...';
+                return `<select class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>
+                    <option>${this._escapeHtml(pickerTitle)}</option>
+                </select>`;
             default:
                 return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>${text}${childrenHtml}</div>`;
         }
@@ -1356,17 +1547,27 @@ class MauiXamlPreviewProvider {
         }
         const bindingMatch = textValue.match(/\{Binding\s+([^}]+)\}/i);
         if (bindingMatch) {
-            return `<span class="binding-placeholder">Binding: ${this._escapeHtml(bindingMatch[1])}</span>`;
+            return `<span class="binding-placeholder">${this._escapeHtml(bindingMatch[1])}</span>`;
         }
         return this._escapeHtml(textValue);
     }
     _buildInlineStyle(element) {
         const style = new Map();
         const attrs = element.resolvedAttributes;
-        const background = attrs['Background'] || attrs['BackgroundColor'];
-        const resolvedBackground = this._resolveColor(background);
-        if (resolvedBackground) {
-            style.set('background-color', resolvedBackground);
+        // Check for gradient background first
+        if (element.metadata.gradientStops && element.metadata.gradientStops.length > 0) {
+            const gradient = this._buildGradientCss(element.metadata.gradientStops, element.metadata.gradientStartPoint, element.metadata.gradientEndPoint);
+            if (gradient) {
+                style.set('background', gradient);
+            }
+        }
+        else {
+            // Regular solid background
+            const background = attrs['Background'] || attrs['BackgroundColor'];
+            const resolvedBackground = this._resolveColor(background);
+            if (resolvedBackground) {
+                style.set('background-color', resolvedBackground);
+            }
         }
         const textColor = this._resolveColor(attrs['TextColor'] || attrs['Color']);
         if (textColor) {
@@ -1446,31 +1647,82 @@ class MauiXamlPreviewProvider {
             }
         }
         switch (element.type) {
-            case 'StackLayout': {
+            case 'StackLayout':
+            case 'VerticalStackLayout': {
                 style.set('display', 'flex');
                 const orientation = (attrs['Orientation'] || '').toLowerCase();
                 style.set('flex-direction', orientation === 'horizontal' ? 'row' : 'column');
-                const spacing = attrs['Spacing'];
-                if (spacing) {
+                const spacing = attrs['Spacing'] || '0';
+                if (spacing && spacing !== '0') {
+                    style.set('gap', this._toPixels(spacing));
+                }
+                break;
+            }
+            case 'HorizontalStackLayout': {
+                style.set('display', 'flex');
+                style.set('flex-direction', 'row');
+                const spacing = attrs['Spacing'] || '0';
+                if (spacing && spacing !== '0') {
                     style.set('gap', this._toPixels(spacing));
                 }
                 break;
             }
             case 'Grid': {
                 style.set('display', 'grid');
-                const columns = element.metadata.gridColumns && element.metadata.gridColumns.length
+                // Get defined columns and rows
+                let columns = element.metadata.gridColumns && element.metadata.gridColumns.length
                     ? element.metadata.gridColumns.map(g => this._convertGridLength(g)).join(' ')
                     : '1fr';
-                const rows = element.metadata.gridRows && element.metadata.gridRows.length
+                let rows = element.metadata.gridRows && element.metadata.gridRows.length
                     ? element.metadata.gridRows.map(g => this._convertGridLength(g)).join(' ')
                     : 'auto';
+                // Find the maximum Grid.Row and Grid.Column used by children
+                let maxRow = (element.metadata.gridRows?.length || 1) - 1;
+                let maxCol = (element.metadata.gridColumns?.length || 1) - 1;
+                const checkChildren = (children) => {
+                    for (const child of children) {
+                        const rowAttr = child.resolvedAttributes['Grid.Row'];
+                        const colAttr = child.resolvedAttributes['Grid.Column'];
+                        if (rowAttr) {
+                            const rowNum = Number(rowAttr);
+                            if (!Number.isNaN(rowNum)) {
+                                maxRow = Math.max(maxRow, rowNum);
+                            }
+                        }
+                        if (colAttr) {
+                            const colNum = Number(colAttr);
+                            if (!Number.isNaN(colNum)) {
+                                maxCol = Math.max(maxCol, colNum);
+                            }
+                        }
+                        if (child.children.length > 0) {
+                            checkChildren(child.children);
+                        }
+                    }
+                };
+                checkChildren(element.children);
+                // Add auto rows/columns if needed to cover max Grid.Row/Column
+                const definedRows = element.metadata.gridRows?.length || 0;
+                const definedCols = element.metadata.gridColumns?.length || 0;
+                if (maxRow >= definedRows) {
+                    const needRows = maxRow - definedRows + 1;
+                    const autoRows = Array(needRows).fill('auto').join(' ');
+                    rows = definedRows > 0 ? rows + ' ' + autoRows : autoRows;
+                }
+                if (maxCol >= definedCols) {
+                    const needCols = maxCol - definedCols + 1;
+                    const frCols = Array(needCols).fill('1fr').join(' ');
+                    columns = definedCols > 0 ? columns + ' ' + frCols : frCols;
+                }
                 style.set('grid-template-columns', columns);
                 style.set('grid-template-rows', rows);
-                if (attrs['ColumnSpacing']) {
-                    style.set('column-gap', this._toPixels(attrs['ColumnSpacing']));
+                const colSpacing = attrs['ColumnSpacing'] || '0';
+                const rowSpacing = attrs['RowSpacing'] || '0';
+                if (colSpacing && colSpacing !== '0') {
+                    style.set('column-gap', this._toPixels(colSpacing));
                 }
-                if (attrs['RowSpacing']) {
-                    style.set('row-gap', this._toPixels(attrs['RowSpacing']));
+                if (rowSpacing && rowSpacing !== '0') {
+                    style.set('row-gap', this._toPixels(rowSpacing));
                 }
                 break;
             }
@@ -1505,6 +1757,25 @@ class MauiXamlPreviewProvider {
                 style.set('display', 'inline-flex');
                 style.set('align-items', 'center');
                 style.set('justify-content', 'center');
+                style.set('cursor', 'pointer');
+                if (!style.has('padding')) {
+                    style.set('padding', '10px 20px');
+                }
+                if (!style.has('border')) {
+                    style.set('border', 'none');
+                }
+                if (!style.has('font-size')) {
+                    style.set('font-size', '14px');
+                }
+                if (!style.has('border-radius')) {
+                    const radius = attrs['CornerRadius'];
+                    if (radius) {
+                        style.set('border-radius', this._convertCornerRadius(radius));
+                    }
+                    else {
+                        style.set('border-radius', '8px');
+                    }
+                }
                 break;
             }
             case 'ScrollView': {
@@ -1513,6 +1784,27 @@ class MauiXamlPreviewProvider {
             }
             case 'Label': {
                 style.set('display', 'block');
+                break;
+            }
+            case 'Entry': {
+                style.set('display', 'block');
+                style.set('width', '100%');
+                style.set('box-sizing', 'border-box');
+                if (!style.has('padding')) {
+                    style.set('padding', '10px 12px');
+                }
+                if (!style.has('border')) {
+                    style.set('border', '1px solid rgba(0,0,0,0.12)');
+                }
+                if (!style.has('border-radius')) {
+                    style.set('border-radius', '4px');
+                }
+                if (!style.has('font-size')) {
+                    style.set('font-size', '14px');
+                }
+                if (!style.has('background-color')) {
+                    style.set('background-color', '#ffffff');
+                }
                 break;
             }
         }
@@ -1576,6 +1868,32 @@ class MauiXamlPreviewProvider {
             return this._themeColors.get(value);
         }
         return undefined;
+    }
+    _buildGradientCss(stops, startPoint, endPoint) {
+        if (!stops || stops.length === 0) {
+            return undefined;
+        }
+        // Parse start and end points (format: "x,y")
+        const parsePoint = (point) => {
+            const parts = point.split(',').map(p => parseFloat(p.trim()));
+            return { x: parts[0] || 0, y: parts[1] || 0 };
+        };
+        const start = parsePoint(startPoint || '0,0');
+        const end = parsePoint(endPoint || '1,1');
+        // Calculate angle for linear gradient
+        // MAUI uses StartPoint (0,0) = top-left, (1,1) = bottom-right
+        // CSS uses degrees where 0deg = to top, 90deg = to right
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const angleRad = Math.atan2(dy, dx);
+        const angleDeg = (angleRad * 180 / Math.PI) + 90; // Adjust for CSS coordinate system
+        // Build gradient stops with resolved colors
+        const gradientStops = stops.map(stop => {
+            const color = this._resolveColor(stop.color) || stop.color;
+            const offset = parseFloat(stop.offset) * 100;
+            return `${color} ${offset}%`;
+        }).join(', ');
+        return `linear-gradient(${angleDeg}deg, ${gradientStops})`;
     }
     _normalizeColorValue(value) {
         const trimmed = value.trim();
@@ -1691,6 +2009,61 @@ class MauiXamlPreviewProvider {
         const bottom = this._toPixels(parts[2]);
         const left = this._toPixels(parts[3]);
         return `${top} ${right} ${bottom} ${left}`;
+    }
+    _getImageWebviewUri(source) {
+        if (!source || source.includes('{Binding')) {
+            return '';
+        }
+        // If it's already an HTTP URL, return as-is
+        if (source.startsWith('http://') || source.startsWith('https://')) {
+            return source;
+        }
+        if (!this._currentPanel || !this._currentDocument) {
+            return '';
+        }
+        try {
+            const docDir = path.dirname(this._currentDocument.uri.fsPath);
+            let resolvedPath = '';
+            // Try relative to document
+            let candidate = path.resolve(docDir, source);
+            if (fs.existsSync(candidate)) {
+                resolvedPath = candidate;
+            }
+            else {
+                // Try relative to workspace root
+                const workspace = vscode.workspace.getWorkspaceFolder(this._currentDocument.uri);
+                if (workspace) {
+                    candidate = path.resolve(workspace.uri.fsPath, source);
+                    if (fs.existsSync(candidate)) {
+                        resolvedPath = candidate;
+                    }
+                    else {
+                        // Try Resources/Images
+                        candidate = path.resolve(workspace.uri.fsPath, 'Resources', source);
+                        if (fs.existsSync(candidate)) {
+                            resolvedPath = candidate;
+                        }
+                        else {
+                            candidate = path.resolve(workspace.uri.fsPath, 'Resources', 'Images', source);
+                            if (fs.existsSync(candidate)) {
+                                resolvedPath = candidate;
+                            }
+                        }
+                    }
+                }
+            }
+            if (!resolvedPath) {
+                console.warn(`[PreviewProvider] Image not found: ${source}`);
+                return '';
+            }
+            const imageUri = vscode.Uri.file(resolvedPath);
+            const webviewUri = this._currentPanel.webview.asWebviewUri(imageUri);
+            return webviewUri.toString();
+        }
+        catch (error) {
+            console.error('[PreviewProvider] Failed to resolve image path:', source, error);
+            return '';
+        }
     }
     _convertCornerRadius(value) {
         if (!value) {
@@ -1868,4 +2241,5 @@ class MauiXamlPreviewProvider {
 }
 exports.MauiXamlPreviewProvider = MauiXamlPreviewProvider;
 MauiXamlPreviewProvider.viewType = 'mauiXamlPreview';
+MauiXamlPreviewProvider._listenerCount = 0;
 //# sourceMappingURL=previewProvider.js.map

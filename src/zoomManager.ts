@@ -97,7 +97,7 @@ export class ZoomManager {
                 }
 
                 setupEventListeners() {
-                    document.addEventListener('DOMContentLoaded', () => {
+                    const attachListeners = () => {
                         const zoomInBtn = document.getElementById('zoomIn');
                         const zoomOutBtn = document.getElementById('zoomOut');
                         const zoomFitBtn = document.getElementById('zoomFit');
@@ -109,7 +109,15 @@ export class ZoomManager {
                         if (zoomActualBtn) zoomActualBtn.addEventListener('click', () => this.zoomActualSize());
 
                         console.log('[WebViewZoomManager] Event listeners set up');
-                    });
+                    };
+
+                    // Try to attach immediately if DOM is ready
+                    if (document.readyState === 'loading') {
+                        document.addEventListener('DOMContentLoaded', attachListeners);
+                    } else {
+                        // DOM is already loaded, attach immediately
+                        attachListeners();
+                    }
                 }
 
                 zoomIn() {
@@ -133,7 +141,7 @@ export class ZoomManager {
                 }
             }
 
-            const webViewZoomManager = new WebViewZoomManager();
+            window.webViewZoomManager = new WebViewZoomManager();
         `;
   }
 }

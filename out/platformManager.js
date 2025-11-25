@@ -38,26 +38,26 @@ class PlatformManager {
         this.platforms.set('Windows', {
             name: 'Windows',
             displayName: 'Windows Desktop',
-            width: 800,
-            height: 600,
+            width: 1200,
+            height: 800,
             devicePixelRatio: 1,
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             statusBarHeight: 0,
-            navigationBarHeight: 32,
-            borderRadius: 8,
+            navigationBarHeight: 0,
+            borderRadius: 0,
             backgroundColor: '#f3f3f3',
             frameColor: '#e1e1e1'
         });
         this.platforms.set('macOS', {
             name: 'macOS',
             displayName: 'macOS Desktop',
-            width: 800,
-            height: 600,
+            width: 1200,
+            height: 800,
             devicePixelRatio: 2,
             userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
             statusBarHeight: 0,
-            navigationBarHeight: 28,
-            borderRadius: 12,
+            navigationBarHeight: 0,
+            borderRadius: 0,
             backgroundColor: '#f5f5f7',
             frameColor: '#d1d1d6'
         });
@@ -108,16 +108,23 @@ class PlatformManager {
     }
     generateDeviceFrameCss() {
         const config = this.getCurrentConfig();
+        const isDesktop = config.name === 'Windows' || config.name === 'macOS';
         return `
             .device-frame {
                 width: ${config.width}px;
                 height: ${config.height}px;
+                min-width: 320px;
+                min-height: 400px;
+                max-width: 100%;
+                max-height: 100%;
                 border-radius: ${config.borderRadius}px;
-                background-color: ${config.frameColor};
-                box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3);
+                background-color: ${isDesktop ? 'transparent' : config.frameColor};
+                box-shadow: ${isDesktop ? 'none' : '0 8px 32px rgba(0, 0, 0, 0.3)'};
                 position: relative;
-                overflow: hidden;
-                margin: 20px auto;
+                overflow: ${isDesktop ? 'visible' : 'hidden'};
+                margin: ${isDesktop ? '0' : '20px auto'};
+                resize: ${isDesktop ? 'both' : 'none'};
+                border: ${isDesktop ? '1px solid #e0e0e0' : 'none'};
             }
 
             .device-screen {
@@ -126,7 +133,7 @@ class PlatformManager {
                 background-color: ${config.backgroundColor};
                 border-radius: ${Math.max(0, config.borderRadius - 4)}px;
                 position: relative;
-                overflow: hidden;
+                overflow: ${isDesktop ? 'auto' : 'hidden'};
             }
 
             .status-bar {
@@ -153,9 +160,23 @@ class PlatformManager {
 
             .content-area {
                 height: calc(100% - ${config.statusBarHeight + config.navigationBarHeight}px);
-                overflow: auto;
+                overflow: ${isDesktop ? 'visible' : 'auto'};
                 background-color: ${this.getContentBackgroundColor(config.name)};
             }
+
+            ${isDesktop ? `
+            .device-frame::after {
+                content: '';
+                position: absolute;
+                bottom: 0;
+                right: 0;
+                width: 16px;
+                height: 16px;
+                background: linear-gradient(135deg, transparent 50%, #007acc 50%);
+                cursor: nwse-resize;
+                pointer-events: none;
+            }
+            ` : ''}
 
             .platform-selector {
                 display: flex;
@@ -270,14 +291,11 @@ class PlatformManager {
       function switchPlatform(platformName) {
         console.log('[PlatformManager] Switching to platform:', platformName);
         try {
-          // Use the page-level 'vscode' object if present (set in the main script) to avoid calling acquireVsCodeApi() twice
-          if (typeof window !== 'undefined' && (window as any).vscode && typeof (window as any).vscode.postMessage === 'function') {
-            (window as any).vscode.postMessage({ command: 'switchPlatform', platform: platformName });
-          } else if (typeof acquireVsCodeApi === 'function') {
-            // Fallback: attempt to acquire, but catch if it's already been acquired elsewhere
-            try { acquireVsCodeApi().postMessage({ command: 'switchPlatform', platform: platformName }); } catch(e) { console.warn('[PlatformManager] acquireVsCodeApi fallback failed', e); }
+          // Use the established window.vscode global variable set in the main script
+          if (window.vscode && typeof window.vscode.postMessage === 'function') {
+            window.vscode.postMessage({ command: 'switchPlatform', platform: platformName });
           } else {
-            console.warn('[PlatformManager] VS Code API not available to post platform switch');
+            console.warn('[PlatformManager] window.vscode not available to post platform switch');
           }
         } catch (err) {
           console.warn('[PlatformManager] Error while posting platform switch', err);
