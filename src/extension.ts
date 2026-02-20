@@ -322,6 +322,85 @@ export async function activate(context: vscode.ExtensionContext) {
         previewProvider.updatePreview(editor.document);
     });
 
+    // NEW: Create template from selection command
+    const createTemplateCommand = vscode.commands.registerCommand('mauiTemplates.createFromSelection', async () => {
+        const editor = vscode.window.activeTextEditor;
+        if (!editor) return;
+
+        const selection = editor.selection;
+        const text = editor.document.getText(selection).trim();
+
+        if (!text) {
+            vscode.window.showWarningMessage('Prosim izberite nekaj XAML kode.');
+            return;
+        }
+
+        const name = await vscode.window.showInputBox({
+            prompt: 'Ime novega predloga (Template Name)',
+            placeHolder: 'npr. My Custom Button'
+        });
+
+        if (!name) return;
+
+        await templateManager.saveTemplate(name, text);
+        templatesProvider.setTemplates(templateManager.getTemplates());
+        vscode.window.showInformationMessage(`Template '${name}' shranjen!`);
+    });
+
+    // NEW: Scaffold document from document template
+    const scaffoldDocumentCommand = vscode.commands.registerCommand('mauiTemplates.scaffoldDocument', async () => {
+        const docTemplates = templateManager.getDocumentTemplates();
+        if (!docTemplates.length) {
+            vscode.window.showWarningMessage('Ni na voljo dokumentnih predlog.');
+            return;
+        }
+
+        // QuickPick with template selection
+        const picked = await vscode.window.showQuickPick(
+            docTemplates.map(t => ({
+                label: t.name,
+                description: `[${t.language.toUpperCase()}] ${t.category || ''}`,
+                detail: t.description,
+                template: t
+            })),
+            {
+                placeHolder: 'Izberi dokumentno predlogo za scaffold',
+                matchOnDescription: true,
+                matchOnDetail: true
+            }
+        );
+
+        if (!picked) return;
+        const template = picked.template;
+
+        // Collect variable values from user
+        const values: Record<string, string> = {};
+        for (const variable of template.variables) {
+            const value = await vscode.window.showInputBox({
+                prompt: variable.description || `Vnesi vrednost za ${variable.name}`,
+                placeHolder: variable.default || variable.name,
+                value: variable.default || ''
+            });
+            if (value === undefined) return; // User cancelled
+            values[variable.name] = value;
+        }
+
+        // Resolve template with user values
+        const resolvedContent = templateManager.resolveTemplate(template, values);
+
+        // Determine file extension and language
+        const langId = template.language === 'csharp' ? 'csharp' : 'xml';
+
+        // Open as untitled document
+        const doc = await vscode.workspace.openTextDocument({
+            content: resolvedContent,
+            language: langId
+        });
+        await vscode.window.showTextDocument(doc);
+
+        vscode.window.showInformationMessage(`Dokumentna predloga '${template.name}' ustvarjena!`);
+    });
+
     // NEW: Select element by ID command (from Structure tree clicks)
     const selectElementByIdCommand = vscode.commands.registerCommand('mauiDesigner.selectElementById', async (elementId: string) => {
         try {
@@ -331,11 +410,18 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    // Avtomatsko osveževanje preview-ja ob spremembah
+    // Avtomatsko osveževanje preview-ja ob spremembah (Hot Reload)
+    let updateTimeout: NodeJS.Timeout | undefined;
     const onDidChangeDocument = vscode.workspace.onDidChangeTextDocument(
         (event) => {
-            if (event.document.fileName.endsWith('.xaml')) {
-                previewProvider.updatePreview(event.document);
+            if (event.document.fileName.endsWith('.xaml') && event.contentChanges.length > 0) {
+                // Debounce logic: počakaj 300ms po zadnjem tipkanju
+                if (updateTimeout) {
+                    clearTimeout(updateTimeout);
+                }
+                updateTimeout = setTimeout(() => {
+                    previewProvider.updatePreview(event.document);
+                }, 300);
             }
         }
     );
@@ -372,6 +458,8 @@ export async function activate(context: vscode.ExtensionContext) {
         addPropertyCommand,
         addEntityCommand,
         insertTemplateCommand,
+        createTemplateCommand,
+        scaffoldDocumentCommand,
         selectElementByIdCommand,
         onDidChangeDocument,
         onDidChangeActiveEditor,

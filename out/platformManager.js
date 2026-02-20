@@ -44,9 +44,9 @@ class PlatformManager {
             userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
             statusBarHeight: 0,
             navigationBarHeight: 0,
-            borderRadius: 0,
-            backgroundColor: '#f3f3f3',
-            frameColor: '#e1e1e1'
+            borderRadius: 8,
+            backgroundColor: '#05100a',
+            frameColor: '#0a1912'
         });
         this.platforms.set('macOS', {
             name: 'macOS',
@@ -57,9 +57,9 @@ class PlatformManager {
             userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
             statusBarHeight: 0,
             navigationBarHeight: 0,
-            borderRadius: 0,
-            backgroundColor: '#f5f5f7',
-            frameColor: '#d1d1d6'
+            borderRadius: 12,
+            backgroundColor: '#05100a',
+            frameColor: '#0a1912'
         });
         console.log('[PlatformManager] Initialized platforms:', Array.from(this.platforms.keys()));
     }
@@ -111,20 +111,20 @@ class PlatformManager {
         const isDesktop = config.name === 'Windows' || config.name === 'macOS';
         return `
             .device-frame {
-                width: ${config.width}px;
-                height: ${config.height}px;
+                width: ${isDesktop ? '100%' : config.width + 'px'};
+                height: ${isDesktop ? '100%' : config.height + 'px'};
                 min-width: 320px;
                 min-height: 400px;
                 max-width: 100%;
                 max-height: 100%;
                 border-radius: ${config.borderRadius}px;
                 background-color: ${isDesktop ? 'transparent' : config.frameColor};
-                box-shadow: ${isDesktop ? 'none' : '0 8px 32px rgba(0, 0, 0, 0.3)'};
+                box-shadow: ${isDesktop ? 'none' : '0 20px 60px rgba(0, 0, 0, 0.4)'};
                 position: relative;
                 overflow: ${isDesktop ? 'visible' : 'hidden'};
                 margin: ${isDesktop ? '0' : '20px auto'};
                 resize: ${isDesktop ? 'both' : 'none'};
-                border: ${isDesktop ? '1px solid #e0e0e0' : 'none'};
+                border: ${isDesktop ? 'none' : '4px solid ' + config.frameColor};
             }
 
             .device-screen {
@@ -134,6 +134,7 @@ class PlatformManager {
                 border-radius: ${Math.max(0, config.borderRadius - 4)}px;
                 position: relative;
                 overflow: ${isDesktop ? 'auto' : 'hidden'};
+                ${isDesktop ? 'display: flex; flex-direction: column;' : ''}
             }
 
             .status-bar {
@@ -217,11 +218,11 @@ class PlatformManager {
     }
     getContentBackgroundColor(platformName) {
         switch (platformName) {
-            case 'Android': return '#ffffff';
-            case 'iOS': return '#f2f2f7';
-            case 'Windows': return '#f9f9f9';
-            case 'macOS': return '#ffffff';
-            default: return '#ffffff';
+            case 'Android': return '#05100a';
+            case 'iOS': return '#05100a';
+            case 'Windows': return '#05100a';
+            case 'macOS': return '#05100a';
+            default: return '#05100a';
         }
     }
     generateStatusBarContent() {

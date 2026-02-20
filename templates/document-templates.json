@@ -1,0 +1,142 @@
+[
+    {
+        "id": "floworks-table-vm",
+        "name": "StandardTableViewModel",
+        "category": "ViewModel",
+        "description": "Seznam + filtri ViewModel ki deduje StandardTableViewModel<T>",
+        "language": "csharp",
+        "variables": [
+            {
+                "name": "ClassName",
+                "description": "Ime razreda (brez 'ViewModel' sufiksa)",
+                "default": "MyModule"
+            },
+            {
+                "name": "ItemType",
+                "description": "Tip entitete (npr. Partner, Artikel)",
+                "default": "MyItem"
+            },
+            {
+                "name": "Namespace",
+                "description": "Namespace za razred",
+                "default": "Floworks.MAUI.ViewModels.Modules"
+            }
+        ],
+        "content": "using System.Collections.ObjectModel;\nusing System.Threading.Tasks;\nusing Floworks.MAUI.Models;\nusing Floworks.MAUI.Models.UI;\nusing Floworks.MAUI.Services;\nusing ReactiveUI;\n\nnamespace ${Namespace};\n\npublic class ${ClassName}ViewModel : StandardTableViewModel<${ItemType}>\n{\n    public ${ClassName}ViewModel(IDatabaseService databaseService, INavigationService? navigationService = null)\n        : base(databaseService, navigationService)\n    {\n        InitializeTableDefinitions();\n        EmptyMessage = \"Ni zapisov za prikaz.\";\n    }\n\n    protected override void DefineFilters()\n    {\n        FilterDefinitions.Add(new FilterDefinition\n        {\n            Key = \"search\",\n            Type = FilterType.TextSearch,\n            Label = \"Iskanje\",\n            Placeholder = \"Iskanje...\",\n            WidthRequest = 200\n        });\n    }\n\n    protected override void DefineColumns()\n    {\n        TableColumns.Add(new TableColumnDefinition { Key = \"Id\",   Header = \"ID\",    Width = 60,  IsSortable = true });\n        TableColumns.Add(new TableColumnDefinition { Key = \"Name\", Header = \"Naziv\", Width = 200, IsSortable = true });\n    }\n\n    protected override void DefineActions()\n    {\n        ToolbarActions.Add(new ToolbarAction\n        {\n            Id = \"add\", Text = \"Dodaj\", Icon = \"＋\",\n            Tooltip = \"Dodaj zapis (Ctrl+N)\",\n            Command = AddCommand,\n            BackgroundColor = Color.FromArgb(\"#2a6c5b\"),\n            SortOrder = 0\n        });\n        ToolbarActions.Add(new ToolbarAction\n        {\n            Id = \"delete\", Text = \"Izbriši\", Icon = \"🗑\",\n            Tooltip = \"Izbriši izbrani zapis (Del)\",\n            Command = DeleteCommand,\n            BackgroundColor = Color.FromArgb(\"#8b1a1a\"),\n            SortOrder = 1\n        });\n    }\n\n    protected override async Task LoadDataAsync()\n    {\n        IsLoading = true;\n        try\n        {\n            var search = GetFilterString(\"search\");\n            var order  = GetOrderByClause();\n\n            // TODO: zamenjaj z dejanskim API/DB klicem\n            var sql = $\"\"\"\n                SELECT * FROM ${ItemType}\n                WHERE ($1 IS NULL OR name ILIKE '%' || $1 || '%')\n                {order}\n                LIMIT {PageSize} OFFSET {(CurrentPage - 1) * PageSize}\n                \"\"\";\n\n            var items = await _databaseService.QueryAsync<${ItemType}>(sql, search);\n            Items = new System.Collections.ObjectModel.ObservableCollection<${ItemType}>(items);\n            FilteredItems = Items;\n        }\n        finally { IsLoading = false; }\n    }\n\n    protected override async Task DeleteItemAsync(${ItemType} item)\n    {\n        // TODO: implementiraj brisanje\n        await Task.CompletedTask;\n    }\n}\n"
+    },
+    {
+        "id": "floworks-module-page",
+        "name": "ModuleListPage XAML",
+        "category": "Page",
+        "description": "ContentView s StandardFilterBar + DataTableView",
+        "language": "xaml",
+        "variables": [
+            {
+                "name": "ClassName",
+                "description": "Ime razreda (brez 'Page' sufiksa)",
+                "default": "MyModule"
+            },
+            {
+                "name": "Namespace",
+                "description": "Namespace za razred",
+                "default": "Floworks.MAUI.Views.Modules"
+            }
+        ],
+        "content": "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n<ContentView xmlns=\"http://schemas.microsoft.com/dotnet/2021/maui\"\n             xmlns:x=\"http://schemas.microsoft.com/winfx/2009/xaml\"\n             xmlns:vm=\"clr-namespace:${Namespace}\"\n             xmlns:controls=\"clr-namespace:Floworks.MAUI.Views.Controls\"\n             x:Class=\"${Namespace}.${ClassName}Page\"\n             x:DataType=\"vm:${ClassName}ViewModel\">\n\n    <Grid RowDefinitions=\"Auto,*\" RowSpacing=\"0\">\n\n        <!-- Filter bar z action gumbi na levi, filtri na sredini -->\n        <controls:StandardFilterBar\n            Grid.Row=\"0\"\n            FilterDefinitions=\"{Binding FilterDefinitions}\"\n            Actions=\"{Binding ToolbarActions}\"\n            ApplyFiltersCommand=\"{Binding ApplyFiltersCommand}\"\n            ClearFiltersCommand=\"{Binding ClearFiltersCommand}\"\n            IsLoading=\"{Binding IsLoading}\" />\n\n        <!-- Tabela -->\n        <controls:DataTableView\n            Grid.Row=\"1\"\n            Columns=\"{Binding TableColumns}\"\n            ItemsSource=\"{Binding FilteredItems}\"\n            SelectedItem=\"{Binding SelectedItem, Mode=TwoWay}\"\n            SortCommand=\"{Binding SortCommand}\"\n            SortColumn=\"{Binding SortColumn}\"\n            SortAscending=\"{Binding SortAscending}\"\n            IsLoading=\"{Binding IsLoading}\"\n            EmptyMessage=\"{Binding EmptyMessage}\" />\n\n    </Grid>\n</ContentView>\n"
+    },
+    {
+        "id": "floworks-module-page-cs",
+        "name": "ModuleListPage Code-Behind",
+        "category": "Page",
+        "description": "Code-behind za ModuleListPage ContentView",
+        "language": "csharp",
+        "variables": [
+            {
+                "name": "ClassName",
+                "description": "Ime razreda (brez 'Page' sufiksa)",
+                "default": "MyModule"
+            },
+            {
+                "name": "Namespace",
+                "description": "Namespace za razred",
+                "default": "Floworks.MAUI.Views.Modules"
+            }
+        ],
+        "content": "using Floworks.MAUI.ViewModels;\nusing ${Namespace};\n\nnamespace ${Namespace};\n\npublic partial class ${ClassName}Page : ContentView\n{\n    public ${ClassName}Page()\n    {\n        InitializeComponent();\n    }\n\n    public ${ClassName}Page(${ClassName}ViewModel viewModel) : this()\n    {\n        BindingContext = viewModel;\n    }\n\n    protected override void OnBindingContextChanged()\n    {\n        base.OnBindingContextChanged();\n        if (BindingContext is ${ClassName}ViewModel vm)\n            Loaded += async (_, _) => await vm.LoadDataCommand.ExecuteAsync(null);\n    }\n}\n"
+    },
+    {
+        "id": "floworks-detail-vm",
+        "name": "ModuleDetailViewModel",
+        "category": "ViewModel",
+        "description": "ViewModel za urejanje/dodajanje zapisa, deduje ModuleDetailViewModel<T>",
+        "language": "csharp",
+        "variables": [
+            {
+                "name": "ClassName",
+                "description": "Ime razreda (brez 'DetailViewModel' sufiksa)",
+                "default": "MyModule"
+            },
+            {
+                "name": "ItemType",
+                "description": "Tip entitete (npr. Partner, Artikel)",
+                "default": "MyItem"
+            },
+            {
+                "name": "Namespace",
+                "description": "Namespace za razred",
+                "default": "Floworks.MAUI.ViewModels.Modules"
+            }
+        ],
+        "content": "using Floworks.MAUI.Models;\nusing Floworks.MAUI.Services;\nusing Floworks.MAUI.ViewModels.Modules;\nusing ReactiveUI;\n\nnamespace ${Namespace};\n\npublic class ${ClassName}DetailViewModel : ModuleDetailViewModel<${ItemType}>\n{\n    public ${ClassName}DetailViewModel(IDatabaseService db, INavigationService? nav = null)\n        : base(db, nav) { }\n\n    protected override ${ItemType} CreateNewItem() => new();\n\n    protected override async Task LoadItemAsync(object id)\n    {\n        // TODO: naloži zapis po ID\n        await Task.CompletedTask;\n    }\n\n    protected override async Task SaveItemAsync(${ItemType} item)\n    {\n        // TODO: shrani (INSERT ali UPDATE)\n        await Task.CompletedTask;\n    }\n\n    protected override async Task DeleteItemAsync(${ItemType} item)\n    {\n        // TODO: izbriši\n        await Task.CompletedTask;\n    }\n\n    protected override async Task DuplicateItemAsync(${ItemType} item)\n    {\n        // TODO: podvoji\n        await Task.CompletedTask;\n    }\n\n    protected override async Task<bool> ValidateAsync()\n    {\n        // TODO: validacija polj\n        return true;\n    }\n\n    protected override void UpdateTitle()\n    {\n        Title = IsEditMode ? $\"Urejanje — {Model}\" : \"Nov zapis\";\n    }\n}\n"
+    },
+    {
+        "id": "floworks-detail-overlay",
+        "name": "DetailOverlay XAML",
+        "category": "Panel",
+        "description": "Slide-in panel za urejanje zapisa",
+        "language": "xaml",
+        "variables": [
+            {
+                "name": "ClassName",
+                "description": "Ime razreda (brez 'DetailsOverlay' sufiksa)",
+                "default": "MyModule"
+            },
+            {
+                "name": "Namespace",
+                "description": "Namespace za razred",
+                "default": "Floworks.MAUI.Views.Modules"
+            }
+        ],
+        "content": "<?xml version=\"1.0\" encoding=\"utf-8\" ?>\n<ContentView xmlns=\"http://schemas.microsoft.com/dotnet/2021/maui\"\n             xmlns:x=\"http://schemas.microsoft.com/winfx/2009/xaml\"\n             xmlns:vm=\"clr-namespace:${Namespace}\"\n             x:Class=\"${Namespace}.${ClassName}DetailsOverlay\"\n             x:DataType=\"vm:${ClassName}DetailViewModel\"\n             IsVisible=\"False\">\n\n    <!-- Zamegljeno ozadje -->\n    <Grid>\n        <BoxView BackgroundColor=\"#80000000\"\n                 InputTransparent=\"False\">\n            <BoxView.GestureRecognizers>\n                <TapGestureRecognizer Command=\"{Binding CancelCommand}\" />\n            </BoxView.GestureRecognizers>\n        </BoxView>\n\n        <!-- Panel -->\n        <Border BackgroundColor=\"{DynamicResource SurfaceBackground}\"\n                Stroke=\"{DynamicResource BorderBrush}\"\n                StrokeThickness=\"1\"\n                WidthRequest=\"480\"\n                HorizontalOptions=\"End\"\n                VerticalOptions=\"Fill\"\n                Padding=\"24\">\n            <Border.StrokeShape><RoundRectangle CornerRadius=\"12,0,0,12\"/></Border.StrokeShape>\n\n            <Grid RowDefinitions=\"Auto,*,Auto\" RowSpacing=\"16\">\n\n                <!-- Header -->\n                <Grid Grid.Row=\"0\" ColumnDefinitions=\"*,Auto\">\n                    <Label Grid.Column=\"0\"\n                           Text=\"{Binding Title}\"\n                           FontSize=\"20\" FontAttributes=\"Bold\"\n                           TextColor=\"{DynamicResource TextPrimary}\" />\n                    <Button Grid.Column=\"1\"\n                            Text=\"✕\" Command=\"{Binding CancelCommand}\"\n                            BackgroundColor=\"Transparent\"\n                            TextColor=\"{DynamicResource TextSecondary}\"\n                            FontSize=\"16\" Padding=\"8,4\" />\n                </Grid>\n\n                <!-- Polja -->\n                <ScrollView Grid.Row=\"1\">\n                    <StackLayout Spacing=\"12\">\n                        <!-- TODO: dodaj Entry/Picker/DatePicker za vsako polje -->\n                        <Label Text=\"Naziv\" FontSize=\"12\"\n                               TextColor=\"{DynamicResource TextSecondary}\" />\n                        <Entry Placeholder=\"Vnesite naziv...\"\n                               BackgroundColor=\"{DynamicResource Surface}\"\n                               TextColor=\"{DynamicResource TextPrimary}\"\n                               FontSize=\"14\" />\n                    </StackLayout>\n                </ScrollView>\n\n                <!-- Gumbi -->\n                <Grid Grid.Row=\"2\" ColumnDefinitions=\"*,*\" ColumnSpacing=\"12\">\n                    <Button Grid.Column=\"0\"\n                            Text=\"Prekliči\"\n                            Command=\"{Binding CancelCommand}\"\n                            BackgroundColor=\"{DynamicResource SurfaceBackground}\"\n                            TextColor=\"{DynamicResource TextSecondary}\"\n                            BorderColor=\"{DynamicResource BorderBrush}\" BorderWidth=\"1\" />\n                    <Button Grid.Column=\"1\"\n                            Text=\"{Binding ModeText}\"\n                            Command=\"{Binding SaveCommand}\"\n                            BackgroundColor=\"{DynamicResource PrimaryAction}\"\n                            TextColor=\"White\" FontAttributes=\"Bold\" />\n                </Grid>\n\n            </Grid>\n        </Border>\n    </Grid>\n</ContentView>\n"
+    },
+    {
+        "id": "floworks-filter-def",
+        "name": "FilterDefinition Snippet",
+        "category": "Snippet",
+        "description": "Snippet za DefineFilters() — TextSearch, Picker, DateRange, NumberRange",
+        "language": "csharp",
+        "variables": [
+            {
+                "name": "key",
+                "description": "Filter key (npr. search, status, dateRange)",
+                "default": "search"
+            },
+            {
+                "name": "label",
+                "description": "Prikazano ime filtra",
+                "default": "Iskanje"
+            },
+            {
+                "name": "placeholder",
+                "description": "Placeholder tekst",
+                "default": "Iskanje..."
+            },
+            {
+                "name": "width",
+                "description": "Širina filtra v pikslih",
+                "default": "200"
+            }
+        ],
+        "content": "// TextSearch\nFilterDefinitions.Add(new FilterDefinition\n{\n    Key = \"${key}\", Type = FilterType.TextSearch,\n    Label = \"${label}\", Placeholder = \"${placeholder}\",\n    WidthRequest = ${width}\n});\n\n// Picker (enum/codelist)\nFilterDefinitions.Add(new FilterDefinition\n{\n    Key = \"${key}\", Type = FilterType.Picker,\n    Label = \"${label}\", Placeholder = \"${placeholder}\",\n    PickerSource = /* TODO: sourceCollection */,\n    PickerDisplayPath = /* TODO: displayProp */,\n    DefaultValue = null,\n    Value = null,\n    WidthRequest = ${width}\n});\n\n// DateRange\nFilterDefinitions.Add(new FilterDefinition\n{\n    Key = \"${key}\", Type = FilterType.DateRange,\n    Label = \"${label}\"\n});\n\n// NumberRange\nFilterDefinitions.Add(new FilterDefinition\n{\n    Key = \"${key}\", Type = FilterType.NumberRange,\n    Label = \"${label}\", WidthRequest = ${width}\n});\n"
+    }
+]

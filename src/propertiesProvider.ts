@@ -140,7 +140,9 @@ export class MauiPropertiesProvider implements vscode.TreeDataProvider<PropertyT
         addItem.command = { command: 'mauiProperties.addProperty', title: 'Dodaj lastnost', arguments: [this._selectedElement] };
         items.push(addItem);
         for (const prop of this._selectedElement.properties) {
-            const item = new PropertyTreeItem(`${prop.key}: ${prop.value}`, 'property', vscode.TreeItemCollapsibleState.None, this._getPropertyIcon(prop.type), undefined, prop);
+            const formattedKey = this._splitCamelCase(prop.key);
+            const item = new PropertyTreeItem(`${formattedKey}: ${prop.value}`, 'property', vscode.TreeItemCollapsibleState.None, this._getPropertyIcon(prop.type), undefined, prop);
+            item.tooltip = `${prop.key}="${prop.value}"`;
             item.command = { command: 'mauiProperties.editProperty', title: 'Uredi lastnost', arguments: [prop] };
             items.push(item);
         }
@@ -200,10 +202,16 @@ export class MauiPropertiesProvider implements vscode.TreeDataProvider<PropertyT
         }
         const sectionProperties = this._selectedElement.properties.filter(prop => prop.section === section);
         return sectionProperties.map(prop => {
-            const item = new PropertyTreeItem(`${prop.key}: ${prop.value}`, 'property', vscode.TreeItemCollapsibleState.None, this._getPropertyIcon(prop.type), undefined, prop);
+            const formattedKey = this._splitCamelCase(prop.key);
+            const item = new PropertyTreeItem(`${formattedKey}: ${prop.value}`, 'property', vscode.TreeItemCollapsibleState.None, this._getPropertyIcon(prop.type), undefined, prop);
+            item.tooltip = `${prop.key}="${prop.value}"`; // Show original key in tooltip
             item.command = { command: 'mauiProperties.editProperty', title: 'Edit Property', arguments: [prop] };
             return item;
         });
+    }
+
+    private _splitCamelCase(str: string): string {
+        return str.replace(/([A-Z])/g, ' $1').trim();
     }
 
     private _findElementById(id: string): XamlElement | undefined {

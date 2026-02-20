@@ -4,6 +4,7 @@
   "description": "Prikaže predogled .NET MAUI XAML dokumentov in omogoča urejanje lastnosti.",
   "publisher": "aljo98",
   "version": "0.1.0",
+  "icon": "media/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -20,6 +21,19 @@
     "onLanguage:xaml"
   ],
   "contributes": {
+    "languages": [
+      {
+        "id": "xaml",
+        "extensions": [
+          ".xaml"
+        ],
+        "aliases": [
+          "XAML",
+          "Xaml"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
     "commands": [
       {
         "command": "mauiXamlPreview.openPreview",
@@ -44,6 +58,12 @@
         "title": "Uredi XAML lastnost…",
         "category": ".NET MAUI",
         "icon": "$(settings-gear)"
+      },
+      {
+        "command": "mauiTemplates.scaffoldDocument",
+        "title": "Scaffold dokumentno predlogo…",
+        "category": ".NET MAUI",
+        "icon": "$(file-code)"
       }
     ],
     "viewsContainers": {

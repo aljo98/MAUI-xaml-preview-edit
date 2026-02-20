@@ -86,7 +86,8 @@ class MauiXamlPreviewProvider {
             parseAttributeValue: false,
             trimValues: true,
             removeNSPrefix: false,
-            allowBooleanAttributes: true
+            allowBooleanAttributes: true,
+            updateTagLocation: true
         });
         console.log('[PreviewProvider] Initialized with managers');
     }
@@ -238,6 +239,15 @@ class MauiXamlPreviewProvider {
             this._styles = resourceData.styles;
             this._initializeThemeColors();
             this._parsedElements = this._parseXamlDocument(xamlContent);
+            // NEW: Wrap non-Page roots in a Host Page for better preview context
+            if (this._parsedElements.length === 1) {
+                const root = this._parsedElements[0];
+                const pageTypes = ['ContentPage', 'Shell', 'FlyoutPage', 'TabbedPage', 'NavigationPage', 'Application'];
+                if (!pageTypes.includes(root.type)) {
+                    console.log('[PreviewProvider] Root is not a page, wrapping in Host Page context');
+                    this._parsedElements = [this._createHostPage(root)];
+                }
+            }
             this._indexParsedElements();
             this._assignElementPositions(xamlContent);
             this._xamlElements = this._convertParsedToXamlElements(this._parsedElements);
@@ -327,6 +337,14 @@ class MauiXamlPreviewProvider {
         if (!elementId) {
             return;
         }
+        const element = this._elementLookup.get(elementId);
+        if (element && element.metadata.isSynthetic) {
+            // If selecting host wrapper, select the first real child instead if available
+            if (element.children.length > 0) {
+                await this._handleElementSelection(element.children[0].id, rawLine);
+            }
+            return;
+        }
         this._currentSelectedElementId = elementId;
         let targetLine;
         if (rawLine !== undefined && rawLine !== null && rawLine !== '') {
@@ -336,13 +354,17 @@ class MauiXamlPreviewProvider {
             }
         }
         const elementInfo = this._elementMap.get(elementId);
+        console.log(`[PreviewProvider] Selection request: ID=${elementId}, RawLine=${rawLine}, MapInfo=${JSON.stringify(elementInfo)}`);
         if (!targetLine && elementInfo) {
             targetLine = elementInfo.startLine;
         }
         if (targetLine !== undefined && this._currentDocument) {
-            const editor = vscode.window.activeTextEditor;
-            if (editor && editor.document === this._currentDocument) {
+            // Find any visible editor for this document
+            const editor = vscode.window.visibleTextEditors.find(e => e.document.fileName === this._currentDocument?.fileName);
+            console.log(`[PreviewProvider] Found visible editor: ${editor ? 'Yes' : 'No'}`);
+            if (editor) {
                 const clampedLine = Math.max(0, Math.min(targetLine, editor.document.lineCount - 1));
+                console.log(`[PreviewProvider] Revealing line: ${clampedLine}`);
                 const position = new vscode.Position(clampedLine, 0);
                 editor.selection = new vscode.Selection(position, position);
                 editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
@@ -357,6 +379,12 @@ class MauiXamlPreviewProvider {
                     editor.setDecorations(this._elementHighlightDecoration, [range]);
                 }
             }
+            else {
+                console.warn('[PreviewProvider] No visible editor found for document');
+            }
+        }
+        else {
+            console.warn(`[PreviewProvider] targetLine undefined. Info found? ${!!elementInfo}`);
         }
         await this._focusPropertiesView();
         this._sendElementPropertiesToSidebar(elementId);
@@ -536,14 +564,14 @@ class MauiXamlPreviewProvider {
     }
     _initializeThemeColors() {
         this._themeColors.clear();
-        this._themeColors.set('Primary', '#007acc');
-        this._themeColors.set('Secondary', '#6c757d');
+        this._themeColors.set('Primary', '#512BD4'); // MAUI Purple
+        this._themeColors.set('Secondary', '#2B0B98');
         this._themeColors.set('Success', '#28a745');
         this._themeColors.set('Info', '#17a2b8');
         this._themeColors.set('Warning', '#ffc107');
         this._themeColors.set('Danger', '#dc3545');
         this._themeColors.set('Light', '#f8f9fa');
-        this._themeColors.set('Dark', '#343a40');
+        this._themeColors.set('Dark', '#1c1c1c');
         for (const resource of this._resources) {
             if (resource.type === 'Color') {
                 this._themeColors.set(resource.key, resource.value);
@@ -576,6 +604,42 @@ class MauiXamlPreviewProvider {
         parsedElements.forEach(element => this._finalizeElementAttributes(element));
         return parsedElements;
     }
+    _createHostPage(contentElement) {
+        // Create a Host ContentPage
+        const hostPage = {
+            id: 'host-page-root',
+            type: 'ContentPage',
+            name: 'PreviewHostPage',
+            attributes: {
+                'BackgroundColor': 'Transparent'
+            },
+            resolvedAttributes: {
+                'BackgroundColor': 'Transparent'
+            },
+            children: [],
+            metadata: { isSynthetic: true }
+        };
+        // Create a centering Grid to hold the content
+        const hostGrid = {
+            id: 'host-grid-container',
+            type: 'Grid',
+            name: 'PreviewHostContainer',
+            attributes: {
+                'HorizontalOptions': 'Fill',
+                'VerticalOptions': 'Fill',
+                'Padding': '0'
+            },
+            resolvedAttributes: {
+                'HorizontalOptions': 'Fill',
+                'VerticalOptions': 'Fill',
+                'Padding': '0'
+            },
+            children: [contentElement], // Put the original root inside
+            metadata: { isSynthetic: true }
+        };
+        hostPage.children.push(hostGrid);
+        return hostPage;
+    }
     _convertNodeToElement(type, node) {
         if (node === null || node === undefined) {
             return null;
@@ -603,7 +667,10 @@ class MauiXamlPreviewProvider {
             attributes: {},
             resolvedAttributes: {},
             children: [],
-            metadata: {}
+            metadata: {
+                startLine: node[':@']?.['line'],
+                startIndex: node[':@']?.['startIndex']
+            }
         };
         for (const key in node) {
             const value = node[key];
@@ -655,6 +722,8 @@ class MauiXamlPreviewProvider {
                 this._extractBackgroundBrush(element, rawValue);
                 break;
             case 'Resources':
+                // Parse implicit styles (TargetType without x:Key) from inline resources
+                this._extractInlineStyles(element, rawValue);
                 break;
             default:
                 this._appendPropertyChildren(element, rawValue);
@@ -749,8 +818,67 @@ class MauiXamlPreviewProvider {
             }
         }
     }
-    _finalizeElementAttributes(element) {
+    _extractInlineStyles(element, resourceValue) {
+        if (!resourceValue || typeof resourceValue !== 'object') {
+            return;
+        }
+        // Look for Style entries inside the resource dictionary
+        // The XML parser may give us ResourceDictionary wrapper or direct Style children
+        let styleContainer = resourceValue;
+        if (resourceValue['ResourceDictionary']) {
+            styleContainer = resourceValue['ResourceDictionary'];
+        }
+        const styleNodes = styleContainer['Style'];
+        if (!styleNodes) {
+            return;
+        }
+        const styles = Array.isArray(styleNodes) ? styleNodes : [styleNodes];
+        const inlineStyles = [];
+        for (const styleNode of styles) {
+            if (!styleNode || typeof styleNode !== 'object') {
+                continue;
+            }
+            const targetType = styleNode['@_TargetType'];
+            const hasKey = styleNode['@_x:Key'];
+            // Only process implicit styles (TargetType without explicit x:Key)
+            if (!targetType || hasKey) {
+                continue;
+            }
+            const setters = {};
+            const setterNodes = styleNode['Setter'];
+            if (setterNodes) {
+                const setterArray = Array.isArray(setterNodes) ? setterNodes : [setterNodes];
+                for (const setter of setterArray) {
+                    if (setter && typeof setter === 'object' && setter['@_Property'] && setter['@_Value'] !== undefined) {
+                        setters[setter['@_Property']] = String(setter['@_Value']).trim();
+                    }
+                }
+            }
+            if (Object.keys(setters).length > 0) {
+                inlineStyles.push({ targetType, setters });
+            }
+        }
+        if (inlineStyles.length > 0) {
+            element.metadata.inlineStyles = inlineStyles;
+            console.log(`[PreviewProvider] Extracted ${inlineStyles.length} implicit styles from ${element.type}.Resources`);
+        }
+    }
+    _finalizeElementAttributes(element, inheritedInlineStyles = []) {
         const resolved = { ...element.attributes };
+        // Apply implicit styles from inherited inline styles (TargetType matching)
+        for (const implicitStyle of inheritedInlineStyles) {
+            if (implicitStyle.targetType === element.type) {
+                for (const [prop, val] of Object.entries(implicitStyle.setters)) {
+                    // Don't override VisualStateManager or complex properties
+                    if (prop.includes('VisualState') || prop.includes('.')) {
+                        continue;
+                    }
+                    if (!resolved[prop]) {
+                        resolved[prop] = val;
+                    }
+                }
+            }
+        }
         const styleKey = this._extractResourceKey(resolved['Style']);
         if (styleKey) {
             const styleResource = this._resourceManager.resolveStyleResource(styleKey, this._styles);
@@ -780,7 +908,11 @@ class MauiXamlPreviewProvider {
             }
         }
         element.resolvedAttributes = resolved;
-        element.children.forEach(child => this._finalizeElementAttributes(child));
+        // Merge current element's inline styles with inherited ones for children
+        const childInlineStyles = element.metadata.inlineStyles
+            ? [...inheritedInlineStyles, ...element.metadata.inlineStyles]
+            : inheritedInlineStyles;
+        element.children.forEach(child => this._finalizeElementAttributes(child, childInlineStyles));
     }
     _extractResourceKey(value) {
         if (!value) {
@@ -800,34 +932,35 @@ class MauiXamlPreviewProvider {
     }
     _assignElementPositions(xamlContent) {
         this._elementMap.clear();
-        const lineOffsets = this._calculateLineOffsets(xamlContent);
-        let searchIndex = 0;
         const assign = (element) => {
-            // Match opening tag - could be self-closing or not
-            const regex = new RegExp(`<${element.type}(?:[\\n\\r\\s>])`, 'g');
-            regex.lastIndex = searchIndex;
-            const match = regex.exec(xamlContent);
-            if (match) {
-                const startIndex = match.index;
-                const startLine = this._getLineForIndex(startIndex, lineOffsets);
-                element.metadata.startIndex = startIndex;
-                element.metadata.startLine = startLine;
+            if (element.metadata.isSynthetic) {
+                element.children.forEach(assign);
+                return;
+            }
+            // use the location from parser if available
+            let startLine = element.metadata.startLine;
+            let startIndex = element.metadata.startIndex;
+            if (startLine !== undefined && startIndex !== undefined) {
+                // fast-xml-parser lines are 1-based, we use 0-based
+                startLine = Math.max(0, startLine - 1);
+                // estimate end line
                 let endLine = startLine;
-                // Check if it's a self-closing tag
-                const remainingContent = xamlContent.substring(startIndex);
-                const tagEnd = remainingContent.indexOf('>');
+                const remaining = xamlContent.substring(startIndex);
+                const tagEnd = remaining.indexOf('>');
                 if (tagEnd !== -1) {
-                    const tagContent = remainingContent.substring(0, tagEnd + 1);
+                    const tagContent = remaining.substring(0, tagEnd + 1);
                     if (tagContent.trim().endsWith('/>')) {
-                        // Self-closing tag
-                        endLine = this._getLineForIndex(startIndex + tagEnd, lineOffsets);
+                        // self-closing
+                        const contentBeforeEnd = xamlContent.substring(0, startIndex + tagEnd);
+                        endLine = contentBeforeEnd.split('\n').length - 1;
                     }
                     else {
-                        // Look for closing tag
+                        // find closing tag
                         const closingTag = `</${element.type}>`;
                         const closingIndex = xamlContent.indexOf(closingTag, startIndex);
                         if (closingIndex !== -1) {
-                            endLine = this._getLineForIndex(closingIndex + closingTag.length - 1, lineOffsets);
+                            const contentBeforeClosingEnd = xamlContent.substring(0, closingIndex + closingTag.length);
+                            endLine = contentBeforeClosingEnd.split('\n').length - 1;
                         }
                     }
                 }
@@ -836,7 +969,6 @@ class MauiXamlPreviewProvider {
                     endLine,
                     elementName: element.type
                 });
-                searchIndex = regex.lastIndex;
             }
             element.children.forEach(assign);
         };
@@ -887,104 +1019,103 @@ class MauiXamlPreviewProvider {
 <title>MAUI XAML Preview</title>
 <style>
     :root {
-        color-scheme: light;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        color-scheme: light dark;
+        --toolbar-bg: rgba(10, 25, 18, 0.85); /* Dark Green-Black Glass */
+        --toolbar-border: rgba(255, 255, 255, 0.05);
+        --toolbar-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+        --accent-color: #512BD4;
+        --sidebar-bg: #05100a; /* Very Dark Forest Green/Black */
+        --text-main: #e2e8f0;
+        --text-muted: #94a3b8;
+    }
+
+    @media (prefers-color-scheme: dark) {
+        :root {
+            --toolbar-bg: rgba(10, 25, 18, 0.9);
+            --toolbar-border: rgba(255, 255, 255, 0.08);
+            --sidebar-bg: #05100a;
+            --text-main: #f1f5f9;
+        }
     }
 
     body {
         margin: 0;
-        padding: 20px;
-        background: #f5f5f5;
-        overflow: auto;
+        padding: 0;
+        background: var(--sidebar-bg);
+        color: var(--text-main);
+        overflow: hidden;
+        height: 100vh;
+        width: 100vw;
+        display: flex;
+        flex-direction: column;
+        font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
     }
 
+
     .preview-container {
-        max-width: 100%;
-        margin: 0 auto;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+        width: 100%;
     }
 
     .toolbar {
-        background: white;
-        border-radius: 8px;
-        padding: 16px;
-        margin-bottom: 16px;
-        box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+        background: var(--toolbar-bg);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-bottom: 1px solid var(--toolbar-border);
+        padding: 12px 20px;
         display: flex;
-        flex-wrap: wrap;
+        flex-wrap: nowrap;
         gap: 16px;
         align-items: center;
+        z-index: 1000;
+        box-shadow: var(--toolbar-shadow);
     }
 
-    .zoom-controls {
+
+    .zoom-controls, .view-mode-toggle {
         display: flex;
         align-items: center;
-        gap: 8px;
-        border: 1px solid #d0d0d0;
-        border-radius: 6px;
-        padding: 4px;
-        background: #fafafa;
+        gap: 2px;
+        background: rgba(0,0,0,0.05);
+        border-radius: 8px;
+        padding: 2px;
     }
 
-    .zoom-btn {
+    .zoom-btn, .view-btn {
         padding: 6px 12px;
         border: none;
         background: transparent;
         cursor: pointer;
-        border-radius: 4px;
-        font-size: 14px;
-    }
-
-    .zoom-btn:hover {
-        background: #e9f3ff;
-    }
-
-    .zoom-level {
-        font-weight: 600;
-        min-width: 48px;
-        text-align: center;
-    }
-
-    .view-mode-toggle {
-        display: flex;
-        align-items: center;
-        gap: 8px;
-        border: 1px solid #d0d0d0;
         border-radius: 6px;
-        padding: 4px;
-        background: #fafafa;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--text-main);
+        transition: all 0.2s ease;
     }
 
-    .view-btn {
-        padding: 6px 12px;
-        border: none;
-        background: transparent;
-        cursor: pointer;
-        border-radius: 4px;
-        font-size: 14px;
-        transition: background 0.15s ease, color 0.15s ease;
-    }
-
-    .view-btn:hover {
-        background: #e9f3ff;
+    .zoom-btn:hover, .view-btn:hover {
+        background: rgba(0,0,0,0.08);
     }
 
     .view-btn.active {
-        background: #007acc;
+        background: var(--accent-color);
         color: white;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
     }
 
+
     .preview-viewport {
-        background: #fafafa;
-        border-radius: 8px;
-        padding: 20px;
-        box-shadow: 0 2px 8px rgba(15,22,33,0.08);
         flex: 1;
         display: flex;
         justify-content: center;
-        align-items: flex-start;
+        align-items: stretch; /* was flex-start */
         overflow: auto;
-        min-height: 500px;
+        padding: 0; /* was 20px */
+        background: var(--sidebar-bg);
     }
+
 
     .device-wrapper {
         transition: transform 0.3s ease;
@@ -993,7 +1124,7 @@ class MauiXamlPreviewProvider {
         height: 100%;
         display: flex;
         justify-content: center;
-        align-items: flex-start;
+        align-items: stretch; /* was flex-start */
     }
 
     ${deviceFrameCss}
@@ -1080,20 +1211,50 @@ class MauiXamlPreviewProvider {
 
     .maui-entry {
         outline: none;
-        box-sizing: border-box;
-        /* Other styles set via inline */
-    }
+        border: 1px solid rgba(0,0,0,0.1);
+        border-radius: 6px;
+        padding: 10px 14px;
+        font-size: 14px;
+        background: white;
         width: 100%;
         box-sizing: border-box;
+        transition: border-color 0.2s;
+    }
+
+    .maui-entry:focus {
+        border-color: var(--accent-color);
+    }
+
+    .maui-picker-wrapper {
+        position: relative;
+        display: flex;
+        align-items: center;
+    }
+
+    .maui-picker-wrapper::after {
+        content: '▼';
+        position: absolute;
+        right: 12px;
+        font-size: 10px;
+        pointer-events: none;
+        opacity: 0.5;
     }
 
     .maui-picker {
-        padding: 8px 12px;
-        border: 1px solid #d0d0d0;
+        width: 100%;
+        appearance: none;
+        -webkit-appearance: none;
+        padding: 10px 32px 10px 12px;
+        border: 1px solid rgba(0,0,0,0.1);
         border-radius: 6px;
         font-size: 14px;
         background: white;
         cursor: pointer;
+        outline: none;
+    }
+
+    .maui-picker:focus {
+        border-color: var(--accent-color);
     }
 
     .maui-activityindicator {
@@ -1147,6 +1308,10 @@ class MauiXamlPreviewProvider {
             <button class="view-btn ${this._viewMode === 'full' ? 'active' : ''}" data-mode="full" title="Prikaži celotno hierarhijo">Celoten pogled</button>
             <button class="view-btn ${this._viewMode === 'selected' ? 'active' : ''}" data-mode="selected" title="Prikaži samo izbrani element">Izbrani element</button>
         </div>
+        <div class="view-mode-toggle" id="viewModeContainer">
+             <button id="btnViewMain" class="view-btn active" title="Prikaži samo osnovno stran (brez popupov)">Osnovni</button>
+             <button id="btnViewPopup" class="view-btn" title="Prikaži samo popup okna">Popup</button>
+        </div>
         ${platformSelector}
     </div>
     <div class="preview-viewport">
@@ -1172,6 +1337,139 @@ class MauiXamlPreviewProvider {
     ${zoomScript}
 
     let currentViewMode = '${this._viewMode}';
+
+    // Popup View Mode Logic
+    const btnViewMain = document.getElementById('btnViewMain');
+    const btnViewPopup = document.getElementById('btnViewPopup');
+    
+    const setPopupMode = (isPopup) => {
+        if (btnViewMain) btnViewMain.classList.toggle('active', !isPopup);
+        if (btnViewPopup) btnViewPopup.classList.toggle('active', isPopup);
+        
+        const root = document.querySelector('.xaml-root');
+        if (!root) return;
+
+        const simulatedPopups = document.querySelectorAll('.maui-detected-popup');
+        const realPopups = document.querySelectorAll('.maui-popup-backdrop');
+
+        if (isPopup) {
+            // POPUP MODE: Show ONLY popups
+            // Hide everything in root space
+            root.style.visibility = 'hidden';
+            
+            // Re-enable visibility for popups
+            simulatedPopups.forEach(el => {
+                el.style.visibility = 'visible';
+                el.style.display = ''; // Restore default display
+            });
+            realPopups.forEach(el => {
+                el.style.visibility = 'visible';
+                el.style.display = 'flex';
+            });
+
+        } else {
+            // BASIC MODE: Show Main Content, Hide Popups
+            root.style.visibility = ''; // Restore root visibility
+            
+            // Hide popups explicitly
+            simulatedPopups.forEach(el => {
+                el.style.display = 'none';
+            });
+            realPopups.forEach(el => {
+                el.style.display = 'none';
+            });
+            
+            // NEW: Hide Dynamic Screens (e.g. IsBusy overlays) in Basic Mode
+            document.querySelectorAll('.maui-dynamic-screen').forEach(el => {
+                el.style.display = 'none';
+            });
+        }
+    };
+
+    // Initialize: Main mode default (Popups hidden)
+    setTimeout(() => {
+        setPopupMode(false);
+        detectDynamicScreens();
+    }, 100);
+
+    if (btnViewMain) {
+        btnViewMain.addEventListener('click', () => {
+            setPopupMode(false);
+            activateTab(btnViewMain);
+        });
+    }
+    if (btnViewPopup) {
+        btnViewPopup.addEventListener('click', () => {
+            setPopupMode(true);
+            activateTab(btnViewPopup);
+        });
+    }
+
+    // Dynamic Screen Detection
+    const detectDynamicScreens = () => {
+        const screens = document.querySelectorAll('.maui-dynamic-screen');
+        const container = document.getElementById('viewModeContainer');
+        if (!container) return;
+
+        // Clear old dynamic buttons (if re-running)
+        const oldBtns = container.querySelectorAll('.dynamic-tab-btn');
+        oldBtns.forEach(b => b.remove());
+
+        // Find unique binding names
+        const uniqueBindings = new Set();
+        screens.forEach(s => {
+            const name = s.getAttribute('data-binding-name');
+            if (name) uniqueBindings.add(name);
+        });
+
+        uniqueBindings.forEach(bindingName => {
+            const btn = document.createElement('button');
+            btn.className = 'view-btn dynamic-tab-btn';
+            btn.textContent = bindingName; // e.g. "IsDetailVisible"
+            btn.title = 'Switch to ' + bindingName + ' View';
+            btn.onclick = () => {
+                activateTab(btn);
+                switchToDynamicScreen(bindingName);
+            };
+            container.appendChild(btn);
+        });
+    };
+
+    const activateTab = (activeBtn) => {
+        document.querySelectorAll('.view-btn').forEach(b => b.classList.remove('active'));
+        activeBtn.classList.add('active');
+    };
+
+    const switchToDynamicScreen = (bindingName) => {
+        const root = document.querySelector('.xaml-root');
+        if (!root) return;
+
+        // Standard Mode logic (hide popups)
+        setPopupMode(false); 
+        // But additionally:
+        // Hide ALL dynamic screens
+        document.querySelectorAll('.maui-dynamic-screen').forEach(el => {
+            el.style.display = 'none';
+        });
+        
+        // Show ONLY the target screens
+        // And make sure they are visible inside root
+        root.style.visibility = ''; 
+        
+        const targets = document.querySelectorAll('.maui-dynamic-screen[data-binding-name="' + bindingName + '"]');
+        targets.forEach(el => {
+            el.style.display = ''; // default
+            // Potentially ensure parent visibility if needed?
+        });
+    };
+    
+    // Add Click Handler for Selection Highlighting
+    window.addEventListener('message', event => {
+        const message = event.data;
+        if (message.command === 'elementClicked') {
+            vscode.postMessage({ type: 'selectElement', elementId: message.elementId });
+        }
+    });
 
     // Helpers for mapping MAUI-like values to CSS
     const toPx = (v) => {
@@ -1368,6 +1666,19 @@ class MauiXamlPreviewProvider {
             applyViewMode(message.mode, message.selectedId);
         }
 
+        if (message.type === 'selectElement') {
+            const elId = message.elementId;
+            const targetEl = document.querySelector('[data-element-id="' + elId + '"]');
+            if (targetEl) {
+                document.querySelectorAll('.maui-element.selected').forEach(el => el.classList.remove('selected'));
+                targetEl.classList.add('selected');
+                targetEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                if (currentViewMode === 'selected') {
+                    applyViewMode('selected', elId);
+                }
+            }
+        }
+
         if (message.type === 'updateProperty') {
             try {
                 const selected = document.querySelector('.maui-element.selected');
@@ -1463,46 +1774,100 @@ class MauiXamlPreviewProvider {
         const classes = ['maui-element'];
         const typeClass = `maui-${element.type.toLowerCase()}`;
         classes.push(typeClass);
-        if (element.type === 'StackLayout' || element.type === 'HorizontalStackLayout') {
-            const orientation = (element.resolvedAttributes['Orientation'] || '').toLowerCase();
-            if (orientation === 'horizontal' || element.type === 'HorizontalStackLayout') {
-                classes.push('is-horizontal');
+        // Detect Simulated Popup (High ZIndex)
+        const zIdxStr = element.resolvedAttributes['ZIndex'];
+        if (zIdxStr) {
+            const z = parseInt(zIdxStr, 10);
+            if (!isNaN(z) && z >= 10) {
+                classes.push('maui-detected-popup');
             }
         }
-        // VerticalStackLayout is just like StackLayout but vertical (default)
-        if (element.type === 'VerticalStackLayout') {
-            classes.push('maui-stacklayout');
+        if (element.type === 'Popup' || element.type === 'toolkit:Popup') {
+            classes.push('maui-detected-popup');
         }
-        const style = this._buildInlineStyle(element);
-        const styleAttr = style ? ` style="${style}"` : '';
-        const dataId = `data-element-id="${element.id}"`;
-        const dataLine = element.metadata.startLine !== undefined ? ` data-line="${element.metadata.startLine}"` : '';
-        const titleAttr = ` title="${element.type}${element.name ? ' • ' + element.name : ''}"`;
+        // Detect Dynamic Screen (IsVisible Binding)
+        // Only major layout containers should be treated as dynamic screens (overlay/toggle)
+        // Simple elements like Button, Label, BoxView, Entry should remain visible in preview
+        let bindingName = '';
+        const isVisibleAttr = element.attributes['IsVisible'] || element.resolvedAttributes['IsVisible'];
+        if (isVisibleAttr && typeof isVisibleAttr === 'string' && isVisibleAttr.includes('{Binding')) {
+            const match = isVisibleAttr.match(/Binding\s+(?:Path=)?([A-Za-z0-9_.]+)/);
+            if (match && match[1]) {
+                bindingName = match[1];
+                // Only classify full-screen overlays (Grid, StackLayout, AbsoluteLayout) as dynamic screens
+                const dynamicScreenTypes = ['Grid', 'StackLayout', 'VerticalStackLayout', 'AbsoluteLayout', 'ContentView'];
+                if (dynamicScreenTypes.includes(element.type)) {
+                    classes.push('maui-dynamic-screen');
+                }
+                // Simple elements with IsVisible bindings remain visible for preview
+            }
+        }
         const childrenHtml = element.children.map(child => this._renderElement(child)).join('');
         const text = this._renderElementText(element);
+        // Helper variables for HTML attributes
+        const dataId = `data-element-id="${element.id}"`;
+        const dataLine = `data-line="${element.metadata.startLine !== undefined ? element.metadata.startLine : ''}"`;
+        const dataBinding = bindingName ? `data-binding-name="${bindingName}"` : '';
+        const styleAttr = `style="${this._buildInlineStyle(element)}"`;
+        // Fix 4: Use ToolTipProperties.Text for tooltip if available
+        const tooltipText = element.resolvedAttributes['ToolTipProperties.Text'];
+        const titleContent = tooltipText && !tooltipText.includes('{Binding')
+            ? this._escapeHtml(tooltipText)
+            : `${element.type}${element.name ? ' (' + element.name + ')' : ''}`;
+        const titleAttr = `title="${titleContent}"`;
+        const onClick = `onclick="notifySelection(this)"`;
         switch (element.type) {
+            case 'Popup':
+            case 'toolkit:Popup':
+                // Popup needs to be an overlay
+                // We'll create a backdrop + the popup content centered
+                const backdropStyle = `
+                    position: fixed;
+                    top: 0; left: 0; right: 0; bottom: 0;
+                    background-color: rgba(0,0,0,0.4);
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    z-index: 9999;
+                `;
+                // Verify if explicit size is set, otherwise auto
+                const contentStyle = this._buildInlineStyle(element) + '; box-shadow: 0 4px 16px rgba(0,0,0,0.2); max-height: 90vh; max-width: 90vw; overflow: auto;';
+                return `
+                <div class="maui-popup-backdrop" style="${backdropStyle}">
+                    <div class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding} style="${contentStyle}"${titleAttr} ${onClick}>
+                        ${this._renderElementText(element)}
+                        ${childrenHtml}
+                    </div>
+                </div>`;
             case 'Label':
-                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>${text}</div>`;
-            case 'Button':
-                return `<button class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>${text || 'Button'}</button>`;
+                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding}${styleAttr}${titleAttr} ${onClick}>${text}</div>`;
+            case 'Button': {
+                const buttonStyle = this._buildInlineStyle(element);
+                return `<button class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding} style="${buttonStyle}" ${titleAttr} ${onClick}>
+                            <span>${text || 'Button'}</span>
+                        </button>`;
+            }
             case 'Entry': {
                 const textValue = element.resolvedAttributes['Text'] ?? element.textContent;
                 const placeholder = element.resolvedAttributes['Placeholder'] || '';
                 const isPassword = element.resolvedAttributes['IsPassword'] === 'True';
                 const inputType = isPassword ? 'password' : 'text';
-                // Check if Text is a binding
                 let displayValue = '';
                 let displayPlaceholder = placeholder;
                 if (textValue && textValue.includes('{Binding')) {
                     const bindingMatch = textValue.match(/\{Binding\s+([^}]+)\}/i);
                     if (bindingMatch) {
-                        displayPlaceholder = bindingMatch[1];
+                        displayPlaceholder = `[${bindingMatch[1]}]`;
                     }
                 }
                 else {
                     displayValue = textValue || '';
                 }
-                return `<input type="${inputType}" class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr} value="${this._escapeHtml(displayValue)}" placeholder="${this._escapeHtml(displayPlaceholder)}" />`;
+                // If no placeholder and no text, show type as hint
+                if (!displayPlaceholder && !displayValue) {
+                    displayPlaceholder = element.type;
+                }
+                return `<input type="${inputType}" class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding} style="${this._buildInlineStyle(element)}" ${titleAttr} value="${this._escapeHtml(displayValue)}" placeholder="${this._escapeHtml(displayPlaceholder)}" ${onClick} />`;
             }
             case 'Editor':
                 return `<textarea class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>${this._escapeHtml(text || '')}</textarea>`;
@@ -1531,11 +1896,37 @@ class MauiXamlPreviewProvider {
                 return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>
                     ${isRunning ? `<div class="activity-spinner" style="border-top-color: ${indicatorColor}"></div>` : ''}
                 </div>`;
-            case 'Picker':
+            case 'Picker': {
                 const pickerTitle = element.resolvedAttributes['Title'] || 'Select...';
-                return `<select class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>
-                    <option>${this._escapeHtml(pickerTitle)}</option>
-                </select>`;
+                return `<div class="maui-picker-wrapper" ${styleAttr}>
+                            <select class="${classes.join(' ')}" ${dataId}${dataLine}${titleAttr} ${onClick}>
+                                <option disabled selected>${this._escapeHtml(pickerTitle)}</option>
+                                <option>Item 1</option>
+                                <option>Item 2</option>
+                            </select>
+                        </div>`;
+            }
+            case 'CollectionView': {
+                // Render CollectionView as a flex container with placeholder items
+                const cvLayout = element.resolvedAttributes['ItemsLayout'] || '';
+                const isHorizontal = cvLayout.toLowerCase().includes('horizontal');
+                const cvStyle = this._buildInlineStyle(element);
+                // Check for LinearItemsLayout child that specifies orientation
+                let orientation = 'vertical';
+                for (const child of element.children) {
+                    if (child.type === 'LinearItemsLayout') {
+                        const orient = child.resolvedAttributes['Orientation'] || child.attributes['Orientation'];
+                        if (orient && orient.toLowerCase() === 'horizontal') {
+                            orientation = 'horizontal';
+                        }
+                    }
+                }
+                const flexDir = orientation === 'horizontal' ? 'row' : 'column';
+                const itemSpacing = element.children.find(c => c.type === 'LinearItemsLayout')?.resolvedAttributes['ItemSpacing'] || '4';
+                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding} style="${cvStyle}; display: flex; flex-direction: ${flexDir}; gap: ${itemSpacing}px;" ${titleAttr} ${onClick}>
+                    <span class="binding-placeholder" style="font-size: 10px; opacity: 0.6;">CollectionView [data-bound]</span>
+                </div>`;
+            }
             default:
                 return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>${text}${childrenHtml}</div>`;
         }
@@ -1547,7 +1938,27 @@ class MauiXamlPreviewProvider {
         }
         const bindingMatch = textValue.match(/\{Binding\s+([^}]+)\}/i);
         if (bindingMatch) {
-            return `<span class="binding-placeholder">${this._escapeHtml(bindingMatch[1])}</span>`;
+            const bindingContent = bindingMatch[1].trim();
+            // Fix 3: Extract StringFormat and show formatted placeholder
+            const stringFormatMatch = bindingContent.match(/StringFormat\s*=\s*'([^']+)'/i)
+                || bindingContent.match(/StringFormat\s*=\s*([^,}]+)/i);
+            if (stringFormatMatch) {
+                // Extract just the format pattern and create a sample value
+                const formatStr = stringFormatMatch[1].trim();
+                // Replace {0:...} or {0} placeholders with sample values
+                let displayText = formatStr
+                    .replace(/\{0:F(\d+)\}/i, (_, digits) => (1.0).toFixed(Number(digits)))
+                    .replace(/\{0:N(\d+)\}/i, (_, digits) => (1000).toFixed(Number(digits)))
+                    .replace(/\{0:P(\d+)\}/i, (_, digits) => (50).toFixed(Number(digits)) + '%')
+                    .replace(/\{0:C(\d+)\}/i, (_, digits) => '$' + (100).toFixed(Number(digits)))
+                    .replace(/\{0\}/g, '...')
+                    .replace(/\{0:[^}]+\}/g, '...');
+                return `<span class="binding-placeholder">${this._escapeHtml(displayText)}</span>`;
+            }
+            // Extract just the binding path (before any comma-separated parameters)
+            const bindingPath = bindingContent.split(',')[0].trim()
+                .replace(/^Path\s*=\s*/i, '');
+            return `<span class="binding-placeholder">${this._escapeHtml(bindingPath)}</span>`;
         }
         return this._escapeHtml(textValue);
     }
@@ -2069,6 +2480,24 @@ class MauiXamlPreviewProvider {
         if (!value) {
             return '0px';
         }
+        const parts = value.split(/[ ,]+/).map(p => p.trim()).filter(Boolean);
+        if (parts.length === 1) {
+            return this._toPixels(parts[0]);
+        }
+        if (parts.length === 2) {
+            // MAUI: TopL/BotR, TopR/BotL -> CSS: TL, TR, BR, BL
+            const a = this._toPixels(parts[0]);
+            const b = this._toPixels(parts[1]);
+            return `${a} ${b} ${a} ${b}`;
+        }
+        if (parts.length === 4) {
+            // MAUI: TL, TR, BL, BR -> CSS: TL, TR, BR, BL
+            const tl = this._toPixels(parts[0]);
+            const tr = this._toPixels(parts[1]);
+            const bl = this._toPixels(parts[2]);
+            const br = this._toPixels(parts[3]);
+            return `${tl} ${tr} ${br} ${bl}`; // Swap BL/BR for CSS order
+        }
         return this._convertThickness(value);
     }
     _convertGridLength(value) {
@@ -2177,6 +2606,9 @@ class MauiXamlPreviewProvider {
         return value;
     }
     _determinePropertyType(key, value) {
+        if (!value || typeof value !== 'string') {
+            return 'string';
+        }
         const lowerKey = key.toLowerCase();
         const lowerValue = value.toLowerCase();
         if (lowerKey.includes('color') || lowerValue.startsWith('#') || lowerValue.startsWith('rgb')) {
@@ -2185,7 +2617,7 @@ class MauiXamlPreviewProvider {
         if (lowerValue === 'true' || lowerValue === 'false') {
             return 'boolean';
         }
-        if (!Number.isNaN(Number(value))) {
+        if (!Number.isNaN(Number(value)) && !lowerKey.includes('margin') && !lowerKey.includes('padding') && !lowerKey.includes('spacing')) {
             return 'number';
         }
         return 'string';
@@ -2207,33 +2639,33 @@ class MauiXamlPreviewProvider {
             return;
         }
         this._currentPanel.webview.html = `<!DOCTYPE html>
-<html>
-<head>
-<meta charset="UTF-8" />
-<title>MAUI XAML Preview - Error</title>
-<style>
-    body {
+        <html>
+        <head>
+        <meta charset="UTF-8" />
+        <title>MAUI XAML Preview - Error</title>
+        <style>
+        body {
         font-family: Segoe UI, sans-serif;
         background: #f6f8fa;
         color: #b91c1c;
         padding: 24px;
-    }
-    .error {
+        }
+        .error {
         background: #fff;
         border-left: 4px solid #dc2626;
         padding: 16px 20px;
         border-radius: 8px;
         box-shadow: 0 4px 12px rgba(0,0,0,0.06);
-    }
-</style>
-</head>
-<body>
-<div class="error">
-    <h2>⚠️ Napaka pri generiranju predogleda</h2>
-    <p>${this._escapeHtml(message)}</p>
-</div>
-</body>
-</html>`;
+        }
+        </style>
+        </head>
+        <body>
+        <div class="error">
+        <h2>⚠️ Napaka pri generiranju predogleda</h2>
+        <p>${this._escapeHtml(message)}</p>
+        </div>
+        </body>
+        </html>`;
     }
     _nextElementId() {
         return `element_${this._elementIdCounter++}`;
