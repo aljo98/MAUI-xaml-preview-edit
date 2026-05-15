@@ -18,6 +18,7 @@ interface ParsedElement {
     textContent?: string;
     metadata: {
         startLine?: number;
+        endLine?: number;
         startIndex?: number;
         gridRows?: string[];
         gridColumns?: string[];
@@ -27,6 +28,7 @@ interface ParsedElement {
         gradientEndPoint?: string;
         isSynthetic?: boolean;
         inlineStyles?: Array<{ targetType: string; setters: Record<string, string> }>;
+        parentType?: string;
     };
 }
 
@@ -66,6 +68,7 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
     private _propertiesTreeView: vscode.TreeView<PropertyTreeItem> | undefined;
     private _structureProvider: MauiPropertiesProvider | undefined;
     private _structureTreeView: vscode.TreeView<PropertyTreeItem> | undefined;
+    private _propertiesWebviewProvider: import('./propertiesWebviewProvider').PropertiesWebviewProvider | undefined;
 
     private _resourceManager: ResourceManager;
     private _platformManager: PlatformManager;
@@ -81,6 +84,78 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
     private _elementIdCounter = 0;
     private _currentSelectedElementId: string | undefined;
     private _viewMode: 'full' | 'selected' = 'full';
+
+    // Webview message callbacks
+    private _messageCallbacks: ((msg: any) => void)[] = [];
+
+    /**
+     * Register callback for webview messages
+     */
+    public addMessageCallback(cb: (msg: any) => void): void {
+        this._messageCallbacks.push(cb);
+    }
+
+    /**
+     * Notify all message callbacks
+     */
+    private _notifyMessageCallbacks(msg: any): void {
+        for (const cb of this._messageCallbacks) {
+            try { cb(msg); } catch (e) { console.error('[PreviewProvider] Callback error:', e); }
+        }
+    }
+
+    /**
+     * Get current HTML content for screenshot/inspection
+     */
+    public getCurrentHtml(): string {
+        return this._generatePreviewHtml();
+    }
+
+    /**
+     * Returns the line range of a parsed element by its ID.
+     * Used by extension.ts safeEditAttribute to restrict edits to the correct element.
+     */
+    public getElementRange(elementId: string): { startLine: number; endLine: number } | undefined {
+        const info = this._elementMap.get(elementId);
+        if (info) return { startLine: info.startLine, endLine: info.endLine };
+        // Fallback: check parsed elements lookup
+        const el = this._elementLookup.get(elementId);
+        if (el?.metadata?.startLine !== undefined) {
+            return { startLine: el.metadata.startLine, endLine: el.metadata.endLine ?? el.metadata.startLine };
+        }
+        return undefined;
+    }
+
+    /**
+     * Returns context of the currently selected element for AI clipboard copy.
+     */
+    public getSelectedElementContext(): {
+        type: string;
+        attributes: Record<string, string>;
+        parentType: string | undefined;
+        childCount: number;
+        startLine: number;
+        endLine: number;
+    } | undefined {
+        if (!this._currentSelectedElementId) return undefined;
+        const el = this._elementLookup.get(this._currentSelectedElementId);
+        if (!el) return undefined;
+        const range = this.getElementRange(this._currentSelectedElementId);
+        return {
+            type: el.type,
+            attributes: el.resolvedAttributes as Record<string, string>,
+            parentType: el.metadata?.parentType,
+            childCount: el.children?.length ?? 0,
+            startLine: range?.startLine ?? el.metadata?.startLine ?? 0,
+            endLine: range?.endLine ?? el.metadata?.endLine ?? 0,
+        };
+    }
+
+    // PUBLIC: Select elements by code behind binding/event name
+    public async selectElementByCode(name: string, isCommand: boolean) {
+        if (!this._currentPanel) return;
+        this._currentPanel.webview.postMessage({ type: 'selectElementByCode', name, isCommand });
+    }
 
     private _xmlParser: XMLParser;
 
@@ -176,6 +251,11 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         this._propertiesProvider = provider;
         this._propertiesTreeView = treeView; // kept for backward compatibility, not used for reveal anymore
         console.log('[PreviewProvider] Properties provider set');
+    }
+
+    public setPropertiesWebviewProvider(provider: import('./propertiesWebviewProvider').PropertiesWebviewProvider) {
+        this._propertiesWebviewProvider = provider;
+        console.log('[PreviewProvider] Properties webview provider set');
     }
 
     public setStructureProvider(provider: MauiPropertiesProvider, treeView: vscode.TreeView<PropertyTreeItem>) {
@@ -1138,6 +1218,7 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>MAUI XAML Preview</title>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <style>
     :root {
         color-scheme: light dark;
@@ -1255,11 +1336,18 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         width: 100%;
         height: 100%;
         overflow: visible;
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-width: 0;
     }
 
     .xaml-root {
         width: 100%;
-        height: 100%;
+        flex: 1;
+        min-width: 0;
+        display: flex;
+        flex-direction: column;
     }
 
     .maui-element {
@@ -1267,6 +1355,9 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         position: relative;
         transition: box-shadow 0.15s ease, transform 0.15s ease;
         cursor: pointer;
+        min-width: 0;
+        flex-shrink: 0;
+        width: 100%;
     }
 
     .maui-element:hover {
@@ -1281,6 +1372,13 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         box-shadow: 0 0 0 2px rgba(37,99,235,0.35), 0 8px 18px rgba(37,99,235,0.15);
     }
 
+    .maui-element.selected {
+        box-shadow: 0 0 0 3px #512BD4, 0 4px 12px rgba(81,43,212,0.3) !important;
+        outline: 2px solid #512BD4;
+        z-index: 100;
+        position: relative;
+    }
+
     .maui-element.ancestor-element {
         outline: 1px dashed rgba(37,99,235,0.35);
     }
@@ -1291,6 +1389,22 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
 
     .maui-stacklayout.is-horizontal {
         /* Handled by inline styles */
+    }
+
+    /* Children of HorizontalStackLayout should NOT stretch to 100% width */
+    .maui-horizontalstacklayout > .maui-element {
+        width: auto !important;
+        flex-shrink: 0;
+    }
+
+    /* ContentPage and ContentView fill the full area */
+    .maui-contentpage,
+    .maui-contentview {
+        width: 100%;
+        height: 100%;
+        flex: 1;
+        display: flex;
+        flex-direction: column;
     }
 
     .maui-grid {
@@ -1434,6 +1548,9 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
              <button id="btnViewPopup" class="view-btn" title="Prikaži samo popup okna">Popup</button>
         </div>
         ${platformSelector}
+        <div class="screenshot-controls" style="margin-left: auto;">
+            <button id="btnScreenshot" class="zoom-btn" title="Naredi screenshot">📸</button>
+        </div>
     </div>
     <div class="preview-viewport">
         <div class="device-wrapper">
@@ -1883,6 +2000,52 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         }
     });
 
+    // Screenshot functionality
+    const btnScreenshot = document.getElementById('btnScreenshot');
+    if (btnScreenshot) {
+        btnScreenshot.addEventListener('click', async () => {
+            try {
+                btnScreenshot.textContent = '⏳';
+                btnScreenshot.disabled = true;
+                
+                const deviceFrame = document.getElementById('deviceFrame');
+                if (!deviceFrame) {
+                    vscode.postMessage({ type: 'showError', message: 'Device frame not found' });
+                    return;
+                }
+                
+                const canvas = await html2canvas(deviceFrame, {
+                    backgroundColor: null,
+                    scale: 2,
+                    useCORS: true,
+                    allowTaint: true,
+                    logging: false
+                });
+                
+                const dataUrl = canvas.toDataURL('image/png');
+                vscode.postMessage({ 
+                    type: 'requestScreenshot', 
+                    dataUrl: dataUrl,
+                    timestamp: new Date().toISOString()
+                });
+                
+                btnScreenshot.textContent = '✓';
+                setTimeout(() => {
+                    btnScreenshot.textContent = '📸';
+                    btnScreenshot.disabled = false;
+                }, 1500);
+            } catch (err) {
+                console.error('Screenshot failed:', err);
+                vscode.postMessage({ type: 'showError', message: 'Screenshot failed: ' + err.message });
+                btnScreenshot.textContent = '⚠';
+                setTimeout(() => {
+                    btnScreenshot.textContent = '📸';
+                    btnScreenshot.disabled = false;
+                }, 2000);
+            }
+        });
+    }
+
     vscode.postMessage({ command: 'ready' });
 </script>
 </body>
@@ -1935,7 +2098,9 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         const dataId = `data-element-id="${element.id}"`;
         const dataLine = `data-line="${element.metadata.startLine !== undefined ? element.metadata.startLine : ''}"`;
         const dataBinding = bindingName ? `data-binding-name="${bindingName}"` : '';
-        const styleAttr = `style="${this._buildInlineStyle(element)}"`;
+        // NOTE: styleAttr is computed AFTER the switch so layout-specific properties are included
+        // Each case that uses styles will call _buildInlineStyle inline
+        let styleAttr = '';
         // Fix 4: Use ToolTipProperties.Text for tooltip if available
         const tooltipText = element.resolvedAttributes['ToolTipProperties.Text'];
         const titleContent = tooltipText && !tooltipText.includes('{Binding')
@@ -1968,8 +2133,10 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                         ${childrenHtml}
                     </div>
                 </div>`;
-            case 'Label':
-                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding}${styleAttr}${titleAttr} ${onClick}>${text}</div>`;
+            case 'Label': {
+                const labelStyle = this._buildInlineStyle(element);
+                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding} style="${labelStyle}"${titleAttr} ${onClick}>${text}</div>`;
+            }
             case 'Button': {
                 const buttonStyle = this._buildInlineStyle(element);
                 return `<button class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding} style="${buttonStyle}" ${titleAttr} ${onClick}>
@@ -2001,34 +2168,42 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
 
                 return `<input type="${inputType}" class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding} style="${this._buildInlineStyle(element)}" ${titleAttr} value="${this._escapeHtml(displayValue)}" placeholder="${this._escapeHtml(displayPlaceholder)}" ${onClick} />`;
             }
-            case 'Editor':
-                return `<textarea class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>${this._escapeHtml(text || '')}</textarea>`;
-            case 'ScrollView':
-                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}><div class="scroll-content">${childrenHtml}</div></div>`;
+            case 'Editor': {
+                const editorStyle = this._buildInlineStyle(element);
+                return `<textarea class="${classes.join(' ')}" ${dataId}${dataLine} style="${editorStyle}"${titleAttr}>${this._escapeHtml(text || '')}</textarea>`;
+            }
+            case 'ScrollView': {
+                const scrollStyle = this._buildInlineStyle(element);
+                return `<div class="${classes.join(' ')}" ${dataId}${dataLine} style="${scrollStyle}"${titleAttr}><div class="scroll-content">${childrenHtml}</div></div>`;
+            }
             case 'Image': {
+                const imgStyle = this._buildInlineStyle(element);
                 const source = element.resolvedAttributes['Source'];
                 if (source && !source.includes('{Binding')) {
                     const webviewUri = this._getImageWebviewUri(source);
                     if (webviewUri) {
-                        return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>
+                        return `<div class="${classes.join(' ')}" ${dataId}${dataLine} style="${imgStyle}"${titleAttr}>
                             <img src="${webviewUri}" alt="${text || 'Image'}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'; this.parentElement.innerHTML='<span class=\\'binding-placeholder\\'>Image not found</span>'" />
                         </div>`;
                     } else {
-                        return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}><span class="binding-placeholder">${source}</span></div>`;
+                        return `<div class="${classes.join(' ')}" ${dataId}${dataLine} style="${imgStyle}"${titleAttr}><span class="binding-placeholder">${source}</span></div>`;
                     }
                 } else {
-                    return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}><span class="binding-placeholder">${text || source || 'Image'}</span></div>`;
+                    return `<div class="${classes.join(' ')}" ${dataId}${dataLine} style="${imgStyle}"${titleAttr}><span class="binding-placeholder">${text || source || 'Image'}</span></div>`;
                 }
             }
-            case 'ActivityIndicator':
+            case 'ActivityIndicator': {
                 const isRunning = element.resolvedAttributes['IsRunning'] === 'True';
                 const indicatorColor = this._resolveColor(element.resolvedAttributes['Color']) || '#007acc';
-                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>
+                const actStyle = this._buildInlineStyle(element);
+                return `<div class="${classes.join(' ')}" ${dataId}${dataLine} style="${actStyle}"${titleAttr}>
                     ${isRunning ? `<div class="activity-spinner" style="border-top-color: ${indicatorColor}"></div>` : ''}
                 </div>`;
+            }
             case 'Picker': {
                 const pickerTitle = element.resolvedAttributes['Title'] || 'Select...';
-                return `<div class="maui-picker-wrapper" ${styleAttr}>
+                const pickerStyle = this._buildInlineStyle(element);
+                return `<div class="maui-picker-wrapper" style="${pickerStyle}">
                             <select class="${classes.join(' ')}" ${dataId}${dataLine}${titleAttr} ${onClick}>
                                 <option disabled selected>${this._escapeHtml(pickerTitle)}</option>
                                 <option>Item 1</option>
@@ -2057,8 +2232,10 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                     <span class="binding-placeholder" style="font-size: 10px; opacity: 0.6;">CollectionView [data-bound]</span>
                 </div>`;
             }
-            default:
-                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>${text}${childrenHtml}</div>`;
+            default: {
+                const defaultStyle = this._buildInlineStyle(element);
+                return `<div class="${classes.join(' ')}" ${dataId}${dataLine} style="${defaultStyle}"${titleAttr}>${text}${childrenHtml}</div>`;
+            }
         }
     }
 
@@ -2218,8 +2395,10 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
             case 'StackLayout':
             case 'VerticalStackLayout': {
                 style.set('display', 'flex');
-                const orientation = (attrs['Orientation'] || '').toLowerCase();
-                style.set('flex-direction', orientation === 'horizontal' ? 'row' : 'column');
+                style.set('flex-direction', 'column');
+                style.set('width', '100%'); // CRITICAL: Must use width, not flex
+                style.set('box-sizing', 'border-box');
+                style.set('align-items', 'stretch'); // Children stretch to full width
                 const spacing = attrs['Spacing'] || '0';
                 if (spacing && spacing !== '0') {
                     style.set('gap', this._toPixels(spacing));
@@ -2229,6 +2408,8 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
             case 'HorizontalStackLayout': {
                 style.set('display', 'flex');
                 style.set('flex-direction', 'row');
+                style.set('width', '100%'); // CRITICAL: Must use width, not flex
+                style.set('box-sizing', 'border-box');
                 const spacing = attrs['Spacing'] || '0';
                 if (spacing && spacing !== '0') {
                     style.set('gap', this._toPixels(spacing));
@@ -2237,6 +2418,10 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
             }
             case 'Grid': {
                 style.set('display', 'grid');
+                style.set('width', '100%'); // CRITICAL: Must use width, not flex
+                style.set('box-sizing', 'border-box');
+                style.set('align-items', 'stretch');
+                style.set('min-height', '0');
 
                 // Get defined columns and rows
                 let columns = element.metadata.gridColumns && element.metadata.gridColumns.length
@@ -2291,6 +2476,12 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
 
                 style.set('grid-template-columns', columns);
                 style.set('grid-template-rows', rows);
+                // If any row uses fr/*, grid needs a defined height to fill parent
+                const hasFrRow = (element.metadata.gridRows || []).some(r => r.trim() === '*' || r.trim().endsWith('*'));
+                if (hasFrRow) {
+                    style.set('height', '100%');
+                    style.set('flex', '1');
+                }
 
                 const colSpacing = attrs['ColumnSpacing'] || '0';
                 const rowSpacing = attrs['RowSpacing'] || '0';
@@ -2333,6 +2524,13 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                 style.set('align-items', 'center');
                 style.set('justify-content', 'center');
                 style.set('cursor', 'pointer');
+                // Buttons shrink to content unless explicit WidthRequest or HorizontalOptions=Fill
+                if (!style.has('width') || style.get('width') === '100%') {
+                    if (!attrs['WidthRequest'] && attrs['HorizontalOptions']?.toLowerCase() !== 'fill' && attrs['HorizontalOptions']?.toLowerCase() !== 'fillandexpand') {
+                        style.set('width', 'fit-content');
+                        style.set('align-self', 'flex-start');
+                    }
+                }
                 if (!style.has('padding')) {
                     style.set('padding', '10px 20px');
                 }
@@ -2358,6 +2556,10 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
             }
             case 'Label': {
                 style.set('display', 'block');
+                // Labels shrink to content unless HorizontalOptions=Fill or inside Grid
+                if (!attrs['WidthRequest'] && attrs['HorizontalOptions']?.toLowerCase() === 'center') {
+                    style.set('width', 'fit-content');
+                }
                 break;
             }
             case 'Entry': {
@@ -2557,11 +2759,16 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         const normalized = option.toLowerCase();
         if (axis === 'horizontal') {
             if (normalized === 'center') {
+                style.set('width', 'fit-content');
                 style.set('margin-left', 'auto');
                 style.set('margin-right', 'auto');
             } else if (normalized === 'end') {
+                style.set('width', 'fit-content');
                 style.set('margin-left', 'auto');
+                style.set('margin-right', '0');
             } else if (normalized === 'start') {
+                style.set('width', 'fit-content');
+                style.set('margin-left', '0');
                 style.set('margin-right', 'auto');
             } else if (normalized === 'fill' || normalized === 'fillandexpand') {
                 style.set('width', '100%');

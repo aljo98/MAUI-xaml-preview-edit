@@ -148,23 +148,29 @@ export class PlatformManager {
                 max-width: 100%;
                 max-height: 100%;
                 border-radius: ${config.borderRadius}px;
-                background-color: ${isDesktop ? 'transparent' : config.frameColor};
+                background-color: ${isDesktop ? '#05100a' : config.frameColor};
                 box-shadow: ${isDesktop ? 'none' : '0 20px 60px rgba(0, 0, 0, 0.4)'};
                 position: relative;
-                overflow: ${isDesktop ? 'visible' : 'hidden'};
+                overflow: ${isDesktop ? 'auto' : 'hidden'};
                 margin: ${isDesktop ? '0' : '20px auto'};
                 resize: ${isDesktop ? 'both' : 'none'};
-                border: ${isDesktop ? 'none' : '4px solid ' + config.frameColor};
+                border: ${isDesktop ? '2px solid #2a3a2e' : '4px solid ' + config.frameColor};
+                display: flex;
+                flex-direction: column;
+                flex: 1;
+                min-width: 0;
             }
 
             .device-screen {
                 width: 100%;
-                height: 100%;
+                min-height: 100px;
                 background-color: ${config.backgroundColor};
                 border-radius: ${Math.max(0, config.borderRadius - 4)}px;
                 position: relative;
-                overflow: ${isDesktop ? 'auto' : 'hidden'};
-                ${isDesktop ? 'display: flex; flex-direction: column;' : ''}
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+                flex: 1;
             }
 
             .status-bar {
@@ -190,48 +196,44 @@ export class PlatformManager {
             }
 
             .content-area {
-                height: calc(100% - ${config.statusBarHeight + config.navigationBarHeight}px);
-                overflow: ${isDesktop ? 'visible' : 'auto'};
+                ${isDesktop ? 'flex: 1; min-height: 0; overflow: auto;' : `height: calc(100% - ${config.statusBarHeight + config.navigationBarHeight}px); overflow: auto;`}
+                width: 100%;
+                display: flex;
+                flex-direction: column;
                 background-color: ${this.getContentBackgroundColor(config.name)};
             }
 
             ${isDesktop ? `
-            .device-frame::after {
-                content: '';
-                position: absolute;
-                bottom: 0;
-                right: 0;
-                width: 16px;
-                height: 16px;
-                background: linear-gradient(135deg, transparent 50%, #007acc 50%);
-                cursor: nwse-resize;
-                pointer-events: none;
-            }
+            /* Windows resize handle - positioned in flex container */
             ` : ''}
 
             .platform-selector {
                 display: flex;
                 gap: 8px;
-                margin-bottom: 16px;
+                margin: 0;
                 flex-wrap: wrap;
+                background: rgba(0,0,0,0.2);
+                padding: 4px 8px;
+                border-radius: 8px;
             }
 
             .platform-btn {
-                padding: 8px 16px;
-                border: 2px solid #e0e0e0;
-                border-radius: 8px;
-                background: white;
+                padding: 6px 12px;
+                border: 2px solid transparent;
+                border-radius: 6px;
+                background: rgba(255,255,255,0.1);
                 cursor: pointer;
                 transition: all 0.2s ease;
-                font-size: 14px;
+                font-size: 13px;
                 display: flex;
                 align-items: center;
                 gap: 6px;
+                color: #e2e8f0;
             }
 
             .platform-btn:hover {
                 border-color: #007acc;
-                background: #f0f8ff;
+                background: rgba(0,122,204,0.3);
             }
 
             .platform-btn.active {
@@ -243,6 +245,13 @@ export class PlatformManager {
             .device-wrapper {
                 transition: transform 0.3s ease;
                 transform-origin: center top;
+                width: 100%;
+                height: 100%;
+                display: flex;
+                flex: 1;
+                flex-direction: column;
+                flex: 1;
+                min-height: 0;
             }
         `;
   }

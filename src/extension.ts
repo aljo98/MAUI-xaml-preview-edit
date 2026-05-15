@@ -1,6 +1,66 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { MauiXamlPreviewProvider } from './previewProvider';
 import { EntityManager } from './entityManager';
+import { PropertiesWebviewProvider } from './propertiesWebviewProvider';
+import { CodeBehindProvider } from './codeBehindProvider';
+import { MauiCompletionProvider } from './completionProvider';
+import { emulatorManager, EmulatorDevice } from './emulatorManager';
+import { ScreenshotManager } from './screenshotManager';
+
+/**
+ * Safely edit or insert an attribute ONLY within the opening tag of the selected element.
+ * Uses element line range from previewProvider._elementMap to avoid touching other elements.
+ */
+function safeEditAttribute(
+    doc: vscode.TextDocument,
+    elementId: string,
+    elementType: string,
+    key: string,
+    value: string,
+    elementRange: { startLine: number; endLine: number } | undefined
+): vscode.WorkspaceEdit {
+    const edit = new vscode.WorkspaceEdit();
+    const text = doc.getText();
+
+    // Determine search bounds: restrict to element line range if available
+    let searchStart = 0;
+    let searchEnd = text.length;
+    if (elementRange) {
+        searchStart = doc.offsetAt(new vscode.Position(elementRange.startLine, 0));
+        // endLine + 2 extra lines as buffer for multi-line opening tags
+        const endLine = Math.min(elementRange.endLine + 2, doc.lineCount - 1);
+        searchEnd = doc.offsetAt(new vscode.Position(endLine, Number.MAX_SAFE_INTEGER));
+    }
+
+    const scopedText = text.slice(searchStart, searchEnd);
+    const keyPattern = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const attrRegex = new RegExp(`${keyPattern}\\s*=\\s*"([^"]*)"`, 'i');
+    const match = attrRegex.exec(scopedText);
+
+    if (match) {
+        const absIdx = searchStart + match.index;
+        const start = doc.positionAt(absIdx);
+        const end = doc.positionAt(absIdx + match[0].length);
+        edit.replace(doc.uri, new vscode.Range(start, end), `${key}="${value}"`);
+    } else {
+        // Insert into the opening tag of the element within scoped range
+        const openTagRegex = new RegExp(`<${elementType.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[\\s>]`, 'i');
+        const tagMatch = openTagRegex.exec(scopedText);
+        if (tagMatch) {
+            // Find the end of the opening tag (before > or />)
+            const tagStart = searchStart + tagMatch.index;
+            const closeIdx = text.indexOf('>', tagStart);
+            if (closeIdx !== -1) {
+                const isSelfClose = text[closeIdx - 1] === '/';
+                const insertOffset = isSelfClose ? closeIdx - 1 : closeIdx;
+                const insertPos = doc.positionAt(insertOffset);
+                edit.insert(doc.uri, insertPos, `\n    ${key}="${value}"`);
+            }
+        }
+    }
+    return edit;
+}
 
 export async function activate(context: vscode.ExtensionContext) {
     console.log('MAUI XAML Preview extension je aktivna!');
@@ -12,21 +72,44 @@ export async function activate(context: vscode.ExtensionContext) {
         previewProvider
     );
 
-    // Registracija sidebar providerjev (3 ločeni pogledi kot pri GitHub Changes/Graph)
+    // Registracija sidebar providerjev
     const propertiesModule = await import('./propertiesProvider');
-    const propertiesProvider = new propertiesModule.MauiPropertiesProvider(context.extensionUri, 'props');
     const templatesProvider = new propertiesModule.MauiPropertiesProvider(context.extensionUri, 'templates');
     const structureProvider = new propertiesModule.MauiPropertiesProvider(context.extensionUri, 'structure');
 
-    // Ensure providers have correct modes (defensive in case constructor defaulting changes)
-    propertiesProvider.setMode('props');
+    // Ensure providers have correct modes
     templatesProvider.setMode('templates');
     structureProvider.setMode('structure');
 
-    const propertiesTreeView = vscode.window.createTreeView('mauiProperties', {
-        treeDataProvider: propertiesProvider,
-        showCollapseAll: false
-    });
+    // Properties panel: WebviewView (inline editing)
+    const propsWebviewProvider = new PropertiesWebviewProvider(context.extensionUri);
+    const regPropsWebview = vscode.window.registerWebviewViewProvider(
+        PropertiesWebviewProvider.viewType,
+        propsWebviewProvider
+    );
+
+    // Wire up inline webview changes to XAML code
+    propsWebviewProvider.onPropertyChanged = async (property, newValue) => {
+        previewProvider.updateElementProperty(property as any, newValue);
+
+        const editor = vscode.window.activeTextEditor;
+        if (!editor || !editor.document.fileName.toLowerCase().endsWith('.xaml')) return;
+
+        const doc = editor.document;
+        const elementRange = property.elementId
+            ? previewProvider.getElementRange(property.elementId)
+            : undefined;
+        const edit = safeEditAttribute(doc, property.elementId || '', property.elementType || '', property.key, newValue, elementRange);
+        if (edit.size > 0) {
+            await vscode.workspace.applyEdit(edit);
+            await doc.save();
+        }
+    };
+
+    propsWebviewProvider.onPropertyAdded = async (elementType, key, value) => {
+        propsWebviewProvider.onPropertyChanged!({ key, value, type: 'string', section: 'appearance', elementType } as any, value);
+    };
+
     const templatesTreeView = vscode.window.createTreeView('mauiTemplates', {
         treeDataProvider: templatesProvider,
         showCollapseAll: false
@@ -36,21 +119,74 @@ export async function activate(context: vscode.ExtensionContext) {
         showCollapseAll: true
     });
 
+    const codeBehindProvider = new CodeBehindProvider();
+    const codeBehindTreeView = vscode.window.createTreeView('mauiCodeBehind', {
+        treeDataProvider: codeBehindProvider,
+        showCollapseAll: true
+    });
+
     // Also register as TreeDataProviders explicitly (defensive) so VS Code always has a provider
-    const regProps = vscode.window.registerTreeDataProvider('mauiProperties', propertiesProvider);
     const regTemplates = vscode.window.registerTreeDataProvider('mauiTemplates', templatesProvider);
     const regStructure = vscode.window.registerTreeDataProvider('mauiStructure', structureProvider);
-    console.log('[Extension] Registered tree data providers for properties, templates and structure');
+    const regCodeBehind = vscode.window.registerTreeDataProvider('mauiCodeBehind', codeBehindProvider);
+    console.log('[Extension] Registered tree data providers for templates, structure, code behind, and webview for properties');
 
     // Povezava med preview in providerji
-    previewProvider.setPropertiesProvider(propertiesProvider, propertiesTreeView);
+    previewProvider.setPropertiesWebviewProvider(propsWebviewProvider);
     previewProvider.setStructureProvider(structureProvider, structureTreeView);
+
+    // Tree view selection handlers - ensure clicking tree items selects elements in preview
+    structureTreeView.onDidChangeSelection((e) => {
+        const selected = e.selection[0];
+        if (selected && selected.contextValue === 'element') {
+            const elementId = (selected as any).elementId;
+            if (elementId) {
+                previewProvider.selectElementById(elementId);
+            }
+        }
+    });
+
+    // Webview message handlers for screenshot functionality
+    previewProvider.addMessageCallback(async (message) => {
+        const screenshotMgr = new (await import('./screenshotManager')).ScreenshotManager(context);
+
+        if (message.type === 'requestScreenshot' && message.dataUrl) {
+            // Screenshot from webview with base64 image data
+            const result = await screenshotMgr.savePreviewScreenshot(message.dataUrl, 'preview');
+            if (result.success) {
+                vscode.window.showInformationMessage(`📸 Screenshot shranjen: ${path.basename(result.path!)}`);
+                // Odpri sliko
+                const doc = await vscode.workspace.openTextDocument(result.path!);
+                await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Three });
+            } else {
+                vscode.window.showErrorMessage(`Napaka pri screenshot: ${result.error}`);
+            }
+        } else if (message.type === 'saveHtml') {
+            const html = previewProvider.getCurrentHtml();
+            if (!html) {
+                vscode.window.showWarningMessage('Najprej odpri XAML preview!');
+                return;
+            }
+
+            const result = await screenshotMgr.getPreviewHtml(html);
+            if (result.success) {
+                vscode.window.showInformationMessage(`HTML shranjen: ${path.basename(result.path!)}`);
+                // Odpri HTML
+                const doc = await vscode.workspace.openTextDocument(result.path!);
+                await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Three });
+            } else {
+                vscode.window.showErrorMessage(`Napaka: ${result.error}`);
+            }
+        } else if (message.type === 'showError') {
+            vscode.window.showErrorMessage(message.message || 'Neznana napaka');
+        }
+    });
 
     // Decoration type for highlighting selected elements v kodi
     const elementHighlightDecoration = vscode.window.createTextEditorDecorationType({
-        backgroundColor: 'rgba(255, 152, 0, 0.2)',
-        border: '2px solid #ff9800',
-        borderRadius: '4px'
+        backgroundColor: 'rgba(255, 255, 0, 0.15)', // Zelo prozorno rumeno
+        border: '1px solid rgba(255, 255, 0, 0.4)',
+        borderRadius: '2px'
     });
 
     // Inicializacija entity managerja
@@ -61,10 +197,11 @@ export async function activate(context: vscode.ExtensionContext) {
     const templateManager = new TemplateManager(context.extensionUri);
     await templateManager.loadTemplates();
     templatesProvider.setTemplates(templateManager.getTemplates());
+    templatesProvider.setDocumentTemplates(templateManager.getDocumentTemplates());
     // Force refresh so the view reflects templates immediately
     templatesProvider.refresh();
     // ensure registered disposables are tracked
-    context.subscriptions.push(regProps, regTemplates, regStructure);
+    context.subscriptions.push(regPropsWebview, regTemplates, regStructure, regCodeBehind);
 
     // Status bar gumb za hiter dostop do preview-ja
     const previewStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 100);
@@ -88,14 +225,21 @@ export async function activate(context: vscode.ExtensionContext) {
     const openPreviewCommand = vscode.commands.registerCommand(
         'mauiXamlPreview.openPreview',
         () => {
-            const activeEditor = vscode.window.activeTextEditor;
+            let activeEditor = vscode.window.activeTextEditor;
+
+            // Fallback: If focus was in the webview/treeview and activeEditor is null,
+            // check visible editors for a XAML file.
+            if (!activeEditor) {
+                activeEditor = vscode.window.visibleTextEditors.find(e => e.document.fileName.toLowerCase().endsWith('.xaml'));
+            }
+
             if (!activeEditor) {
                 vscode.window.showWarningMessage('Odprite XAML datoteko za preview!');
                 return;
             }
 
             const document = activeEditor.document;
-            if (!document.fileName.endsWith('.xaml')) {
+            if (!document.fileName.toLowerCase().endsWith('.xaml')) {
                 vscode.window.showWarningMessage('Preview deluje samo z XAML datotekami!');
                 return;
             }
@@ -128,7 +272,7 @@ export async function activate(context: vscode.ExtensionContext) {
         // 1) Posodobi DOM v webview-u
         previewProvider.updateElementProperty(property, newValue);
 
-        // 2) Posodobi XAML kodo (best-effort inline edit)
+        // 2) Posodobi XAML kodo - varno samo v dosegu izbranega elementa
         const editor = vscode.window.activeTextEditor;
         if (!editor || !editor.document.fileName.toLowerCase().endsWith('.xaml')) {
             vscode.window.showInformationMessage(`Posodobljena lastnost ${property.key}: ${newValue}`);
@@ -136,31 +280,16 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         const doc = editor.document;
-        const text = doc.getText();
-        const keyPattern = property.key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const attrRegex = new RegExp(`${keyPattern}\\s*=\\s*"([^"]*)"`, 'i');
-
-        const edit = new vscode.WorkspaceEdit();
-        if (attrRegex.test(text)) {
-            const match = attrRegex.exec(text)!;
-            const idx = match.index;
-            const start = doc.positionAt(idx);
-            const end = doc.positionAt(idx + match[0].length);
-            const newAttr = `${property.key}="${newValue}"`;
-            edit.replace(doc.uri, new vscode.Range(start, end), newAttr);
-        } else {
-            // Insert attribute after element start tag for a quick update
-            const openTag = new RegExp(`<${property.elementType}[^>]*>`, 'i').exec(text);
-            if (openTag) {
-                const insertPos = doc.positionAt(openTag.index + openTag[0].length - 1); // before '>'
-                const insertion = ` ${property.key}="${newValue}"`;
-                edit.insert(doc.uri, insertPos, insertion);
-            }
-        }
+        const elementRange = property.elementId
+            ? previewProvider.getElementRange(property.elementId)
+            : undefined;
+        const edit = safeEditAttribute(doc, property.elementId || '', property.elementType || '', property.key, newValue, elementRange);
 
         if (edit.size > 0) {
             await vscode.workspace.applyEdit(edit);
             await doc.save();
+        } else {
+            vscode.window.showWarningMessage(`Lastnosti ${property.key} ni bilo mogoče posodobiti v izbranem elementu.`);
         }
 
         vscode.window.showInformationMessage(`Posodobljena lastnost ${property.key}: ${newValue}`);
@@ -224,7 +353,7 @@ export async function activate(context: vscode.ExtensionContext) {
         const bestEffortProperty = { key: propertyKey, value, type: 'string', section: 'appearance', elementType: element.type };
         previewProvider.updateElementProperty(bestEffortProperty as any, value);
 
-        // 4) Vstavi ali zamenjaj atribut v XAML
+        // 4) Vstavi ali zamenjaj atribut v XAML - varno samo v dosegu izbranega elementa
         const editor = vscode.window.activeTextEditor;
         if (!editor || !editor.document.fileName.toLowerCase().endsWith('.xaml')) {
             vscode.window.showInformationMessage(`Dodana lastnost ${propertyKey}: ${value}`);
@@ -232,30 +361,16 @@ export async function activate(context: vscode.ExtensionContext) {
         }
 
         const doc = editor.document;
-        const text = doc.getText();
-        const keyPattern = propertyKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        const attrRegex = new RegExp(`${keyPattern}\\s*=\\s*"([^"]*)"`, 'i');
-
-        const edit = new vscode.WorkspaceEdit();
-        if (attrRegex.test(text)) {
-            const match = attrRegex.exec(text)!;
-            const idx = match.index;
-            const start = doc.positionAt(idx);
-            const end = doc.positionAt(idx + match[0].length);
-            const newAttr = `${propertyKey}="${value}"`;
-            edit.replace(doc.uri, new vscode.Range(start, end), newAttr);
-        } else {
-            const openTag = new RegExp(`<${element.type}[^>]*>`, 'i').exec(text);
-            if (openTag) {
-                const insertPos = doc.positionAt(openTag.index + openTag[0].length - 1);
-                const insertion = ` ${propertyKey}="${value}"`;
-                edit.insert(doc.uri, insertPos, insertion);
-            }
-        }
+        const elementRange = element.elementId
+            ? previewProvider.getElementRange(element.elementId)
+            : undefined;
+        const edit = safeEditAttribute(doc, element.elementId || '', element.type || '', propertyKey, value, elementRange);
 
         if (edit.size > 0) {
             await vscode.workspace.applyEdit(edit);
             await doc.save();
+        } else {
+            vscode.window.showWarningMessage(`Lastnosti ${propertyKey} ni bilo mogoče dodati v izbrani element.`);
         }
 
         vscode.window.showInformationMessage(`Dodana lastnost ${propertyKey}: ${value}`);
@@ -410,26 +525,80 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     });
 
-    // Avtomatsko osveževanje preview-ja ob spremembah (Hot Reload)
-    let updateTimeout: NodeJS.Timeout | undefined;
+    // NEW: Select element by Code-Behind item command (from Code-Behind Inspector clicks)
+    const selectElementByCodeCommand = vscode.commands.registerCommand('mauiCodeBehind.selectItem', async (item: import('./codeBehindProvider').CodeBehindTreeItem) => {
+        try {
+            await previewProvider.selectElementByCode(item.label, item.isCommand);
+
+            // Navigate to C# Code-Behind or View Model
+            if (item.filePath) {
+                await openSymbolInFile(item.filePath, item.label);
+            }
+        } catch (err) {
+            console.warn('selectElementByCodeCommand failed', err);
+        }
+    });
+
+    async function openSymbolInFile(filePath: string, symbolName: string): Promise<boolean> {
+        try {
+            const uri = vscode.Uri.file(filePath);
+            const doc = await vscode.workspace.openTextDocument(uri);
+            const text = doc.getText();
+            // Try to find the symbol
+            const regex = new RegExp(`\\b${symbolName}\\b`);
+            const match = text.match(regex);
+
+            if (match && match.index !== undefined) {
+                const editor = await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Beside });
+                const position = doc.positionAt(match.index);
+                editor.selection = new vscode.Selection(position, position);
+                editor.revealRange(new vscode.Range(position, position), vscode.TextEditorRevealType.InCenter);
+                return true;
+            }
+        } catch (e) {
+            // File might not exist
+        }
+        return false;
+    }
+
+    // Debounce optimization: Immediate update on save, delayed on typing
+    let saveTimeout: NodeJS.Timeout | undefined;
     const onDidChangeDocument = vscode.workspace.onDidChangeTextDocument(
         (event) => {
-            if (event.document.fileName.endsWith('.xaml') && event.contentChanges.length > 0) {
-                // Debounce logic: počakaj 300ms po zadnjem tipkanju
-                if (updateTimeout) {
-                    clearTimeout(updateTimeout);
-                }
-                updateTimeout = setTimeout(() => {
+            if (!event.document.fileName.toLowerCase().endsWith('.xaml')) return;
+
+            // Check if this is a save operation (full document change) vs typing
+            const isTyping = event.contentChanges.length > 0;
+
+            if (saveTimeout) clearTimeout(saveTimeout);
+
+            if (isTyping) {
+                // Quick response for typing (debounce 100ms)
+                saveTimeout = setTimeout(() => {
                     previewProvider.updatePreview(event.document);
-                }, 300);
+                }, 100);
+            } else {
+                // Immediate update on save
+                previewProvider.updatePreview(event.document);
             }
         }
     );
 
+    // Throttle: Only update if not already pending
+    let pendingUpdate: vscode.TextDocument | null = null;
+    const onDidSaveDocument = vscode.workspace.onDidSaveTextDocument((doc) => {
+        if (doc.fileName.toLowerCase().endsWith('.xaml')) {
+            previewProvider.updatePreview(doc);
+        }
+    });
+
     // Poslusjalec za spremembe aktivnega editorja
     const onDidChangeActiveEditor = vscode.window.onDidChangeActiveTextEditor(
         (editor) => {
-            if (editor && editor.document.fileName.endsWith('.xaml')) {
+            if (editor && editor.document.fileName.toLowerCase().endsWith('.xaml')) {
+                // Posodobi context za Code-Behind Inspector
+                codeBehindProvider.updateContext(editor.document.fileName);
+
                 // Osveži properties panel za aktivno XAML datoteko
                 setTimeout(() => {
                     previewProvider.updatePreview(editor.document);
@@ -439,20 +608,363 @@ export async function activate(context: vscode.ExtensionContext) {
         }
     );
 
-    // NEW: Premik kurzorja v XAML → izberi ustrezen element
-    const onDidChangeSelection = vscode.window.onDidChangeTextEditorSelection(async (e) => {
+    // NEW: Premik kurzorja v XAML → izberi ustrezen element (Debounced - optimized)
+    let selectionTimeout: NodeJS.Timeout | undefined;
+    let lastSelectedLine = -1;
+    const onDidChangeSelection = vscode.window.onDidChangeTextEditorSelection((e) => {
         const doc = e.textEditor?.document;
         if (!doc || !doc.fileName.toLowerCase().endsWith('.xaml')) return;
+
         const line = e.selections[0]?.active.line ?? 0;
-        await previewProvider.selectElementAtLine(line);
+        // Skip if same line (avoid redundant updates)
+        if (line === lastSelectedLine) return;
+        lastSelectedLine = line;
+
+        if (selectionTimeout) clearTimeout(selectionTimeout);
+        selectionTimeout = setTimeout(async () => {
+            await previewProvider.selectElementAtLine(line);
+        }, 50); // 50ms debounce - optimized for responsiveness
+    });
+
+    // Completion Provider za XAML IntelliSense
+    const completionProvider = new MauiCompletionProvider();
+    const completionRegistration = vscode.languages.registerCompletionItemProvider(
+        { language: 'xml', scheme: 'file' },
+        completionProvider,
+        '<', ' ', '.', '{', ':', '='
+    );
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // EMULATOR COMMANDS - Testiranje aplikacije na emulatorju
+    // ═══════════════════════════════════════════════════════════════════════════════
+
+    // Ukaz: Prikaži seznam emulatorjev
+    const listEmulatorsCommand = vscode.commands.registerCommand('mauiEmulator.listDevices', async () => {
+        const devices = await emulatorManager.listDevices();
+
+        if (devices.length === 0) {
+            vscode.window.showWarningMessage('Ni najdenih emulatorjev. Preveri ali teče Android emulator.');
+            return;
+        }
+
+        const items = devices.map(d => ({
+            label: d.state === 'ready' ? '🟢 ' : d.state === 'booting' ? '🟡 ' : '🔴 ',
+            description: d.name,
+            detail: `ID: ${d.id} | Platforma: ${d.platform}`,
+            device: d
+        }));
+
+        const selected = await vscode.window.showQuickPick(items, {
+            placeHolder: 'Izberi emulator za testiranje'
+        });
+
+        if (selected) {
+            vscode.window.showInformationMessage(
+                `Izbran emulator: ${selected.device.name} (${selected.device.id})`
+            );
+        }
+    });
+
+    // Ukaz: Zaženi emulator
+    const startEmulatorCommand = vscode.commands.registerCommand('mauiEmulator.start', async () => {
+        const avds = await emulatorManager.listAVDs();
+
+        if (avds.length === 0) {
+            vscode.window.showWarningMessage('Ni najdenih AVD. Ustvari emulator v Android Studio.');
+            return;
+        }
+
+        const selected = await vscode.window.showQuickPick(
+            avds.map(avd => ({ label: avd, description: 'Android emulator' })),
+            { placeHolder: 'Izberi emulator za zagon' }
+        );
+
+        if (selected) {
+            const success = await emulatorManager.startEmulator(selected.label);
+            if (success) {
+                vscode.window.showInformationMessage(`Emulator ${selected.label} se začenja...`);
+            }
+        }
+    });
+
+    // Ukaz: Poveži na Metro (Hot Reload)
+    const connectMetroCommand = vscode.commands.registerCommand('mauiEmulator.connectMetro', async () => {
+        const devices = await emulatorManager.listDevices();
+        const readyDevices = devices.filter(d => d.state === 'ready');
+
+        if (readyDevices.length === 0) {
+            vscode.window.showWarningMessage('Noben emulator ni pripravljen. Zaženi emulator najprej.');
+            return;
+        }
+
+        const selected = await vscode.window.showQuickPick(
+            readyDevices.map(d => ({ label: d.name, description: d.id, device: d })),
+            { placeHolder: 'Izberi emulator za Metro povezavo' }
+        );
+
+        if (selected) {
+            const connection = await emulatorManager.connectToMetro(selected.device.id);
+            if (connection) {
+                vscode.window.showInformationMessage(`Povezava z Metro vzpostavljena! URL: ${connection.url}`);
+            } else {
+                vscode.window.showWarningMessage('Napaka pri povezovanju na Metro. Preveri ali app teče.');
+            }
+        }
+    });
+
+    // Ukaz: Preveri status Metro
+    const checkMetroStatusCommand = vscode.commands.registerCommand('mauiEmulator.checkMetro', async () => {
+        const isRunning = await emulatorManager.checkMetroStatus();
+
+        if (isRunning) {
+            vscode.window.showInformationMessage('✅ Metro je dostopen na localhost:9988');
+        } else {
+            vscode.window.showWarningMessage('❌ Metro ni dostopen. Zaženi app z Hot Reload v VS.');
+        }
+    });
+
+    // Ukaz: Restart ADB
+    const restartAdbCommand = vscode.commands.registerCommand('mauiEmulator.restartAdb', async () => {
+        const success = await emulatorManager.restartAdb();
+        if (success) {
+            vscode.window.showInformationMessage('ADB ponovno zagnan.');
+        } else {
+            vscode.window.showWarningMessage('Napaka pri restartanju ADB.');
+        }
+    });
+
+    // Ukaz: Info o napravi
+    const deviceInfoCommand = vscode.commands.registerCommand('mauiEmulator.deviceInfo', async () => {
+        const devices = await emulatorManager.listDevices();
+        const readyDevices = devices.filter(d => d.state === 'ready');
+
+        if (readyDevices.length === 0) {
+            vscode.window.showWarningMessage('Noben emulator ni pripravljen.');
+            return;
+        }
+
+        const selected = await vscode.window.showQuickPick(
+            readyDevices.map(d => ({ label: d.name, description: d.id, device: d }))
+        );
+
+        if (selected) {
+            const info = await emulatorManager.getDeviceInfo(selected.device.id);
+            if (info) {
+                vscode.window.showInformationMessage(
+                    `📱 ${info.model}\n📌 Android ${info.os} (API ${info.api})`
+                );
+            }
+        }
+    });
+
+    // Status bar za emulator
+    const emulatorStatusBar = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 200);
+    emulatorStatusBar.text = '$(device-mobile) Emulator';
+    emulatorStatusBar.tooltip = 'MAUI Emulator kontrolnik';
+    emulatorStatusBar.command = 'mauiEmulator.listDevices';
+
+    // Osveži status bar ob spremembah
+    const updateEmulatorStatus = async () => {
+        const devices = await emulatorManager.listDevices();
+        const readyCount = devices.filter(d => d.state === 'ready').length;
+        if (readyCount > 0) {
+            emulatorStatusBar.text = `$(device-mobile) Emulator: ${readyCount} pripravljen`;
+            emulatorStatusBar.show();
+        } else {
+            emulatorStatusBar.text = '$(device-mobile) Emulator: Ni povezan';
+            emulatorStatusBar.show();
+        }
+    };
+
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // SCREENSHOT MANAGER - Screenshots & HTML Inspection
+    // ═══════════════════════════════════════════════════════════════════════════════
+    const screenshotManager = new ScreenshotManager(context);
+
+    // Ukaz: Screenshot iz emulatorja
+    const deviceScreenshotCommand = vscode.commands.registerCommand('mauiScreenshot.deviceCapture', async () => {
+        const result = await screenshotManager.captureDeviceScreenshot();
+        if (result.success) {
+            vscode.window.showInformationMessage(`📱 Screenshot shranjen: ${path.basename(result.path!)}`);
+            // Odpri sliko
+            const doc = await vscode.workspace.openTextDocument(result.path!);
+            await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Three });
+        } else {
+            vscode.window.showErrorMessage(`Napaka: ${result.error}`);
+        }
+    });
+
+    // Ukaz: Screenshot iz preview-ja (preko webview messaging)
+    const previewScreenshotCommand = vscode.commands.registerCommand('mauiScreenshot.previewCapture', async () => {
+        // Pošlji sporočilo v webview da naredi screenshot
+        const panel = vscode.window.visibleTextEditors.length > 0 ?
+            vscode.window.activeTextEditor : undefined;
+
+        if (panel) {
+            vscode.window.showInformationMessage('📸 Screenshot preview-ja - klikni gumb v preview oknu ali uporabi Ctrl+Shift+P → "Capture Preview Screenshot"');
+        }
+
+        // Odpri screenshots folder
+        screenshotManager.openScreenshotsFolder();
+    });
+
+    // Ukaz: Prikaži generirani HTML
+    const showHtmlCommand = vscode.commands.registerCommand('mauiScreenshot.showHtml', async () => {
+        const html = previewProvider.getCurrentHtml();
+        if (!html) {
+            vscode.window.showWarningMessage('Najprej odpri XAML preview!');
+            return;
+        }
+
+        // Analiziraj HTML
+        const structure = screenshotManager.analyzeHtmlStructure(html);
+        const styles = screenshotManager.extractStyles(html);
+
+        // Shrani HTML
+        const result = await screenshotManager.getPreviewHtml(html);
+        if (result.success) {
+            // Odpri HTML
+            const doc = await vscode.workspace.openTextDocument(result.path!);
+            await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Three });
+
+            // Prikaži analizo
+            const analysis = `HTML Analysis:\n\nTop Elements:\n` +
+                structure.slice(0, 10).map(s => `  ${s.tag}: ${s.count}x`).join('\n') +
+                `\n\nCSS Blocks: ${styles.length}`;
+            vscode.window.showInformationMessage(analysis);
+        }
+    });
+
+    // Ukaz: Primerjaj preview in device screenshots
+    const compareScreenshotsCommand = vscode.commands.registerCommand('mauiScreenshot.compare', async () => {
+        const screenshots = screenshotManager.listScreenshots();
+
+        const previewScreenshots = screenshots.filter(s => s.name.includes('preview'));
+        const deviceScreenshots = screenshots.filter(s => s.name.includes('device'));
+
+        if (previewScreenshots.length === 0) {
+            vscode.window.showWarningMessage('Ni preview screenshotov. Najprej naredi screenshot preview-ja.');
+            return;
+        }
+        if (deviceScreenshots.length === 0) {
+            vscode.window.showWarningMessage('Ni device screenshotov. Najprej naredi screenshot iz emulatorja.');
+            return;
+        }
+
+        // Izberi preview
+        const selectedPreview = await vscode.window.showQuickPick(
+            previewScreenshots.map(s => ({
+                label: path.basename(s.path),
+                description: s.date.toLocaleString(),
+                path: s.path
+            })),
+            { placeHolder: 'Izberi preview screenshot' }
+        );
+
+        if (!selectedPreview) return;
+
+        // Izberi device
+        const selectedDevice = await vscode.window.showQuickPick(
+            deviceScreenshots.map(s => ({
+                label: path.basename(s.path),
+                description: s.date.toLocaleString(),
+                path: s.path
+            })),
+            { placeHolder: 'Izberi device screenshot' }
+        );
+
+        if (!selectedDevice) return;
+
+        // Odpri primerjavo
+        const result = await screenshotManager.compareScreenshots(selectedPreview.path, selectedDevice.path);
+        if (result) {
+            vscode.window.showInformationMessage('📊 Side-by-side primerjava odprta v novih oknih.');
+        }
+    });
+
+    // Ukaz: Analiziraj razlike med preview in realno app
+    const analyzeDifferencesCommand = vscode.commands.registerCommand('mauiScreenshot.analyzeDifferences', async () => {
+        const html = previewProvider.getCurrentHtml();
+        if (!html) {
+            vscode.window.showWarningMessage('Najprej odpri XAML preview!');
+            return;
+        }
+
+        const structure = screenshotManager.analyzeHtmlStructure(html);
+        const styles = screenshotManager.extractStyles(html);
+        const inlineStyles = screenshotManager.extractInlineStyles(html);
+
+        // Pripravi poročilo
+        const report = `# HTML/Preview Analysis
+
+## Element Structure
+${structure.slice(0, 20).map(s => `- \`<${s.tag}>\`: ${s.count}x`).join('\n')}
+
+## CSS Styles (${styles.length} blocks)
+${styles.map((s, i) => `### Block ${i + 1}\n\`\`\`css\n${s.slice(0, 500)}...\n\`\`\``).join('\n\n')}
+
+## Inline Styles (${inlineStyles.length} total)
+Common properties:
+${JSON.stringify(
+            Object.entries(
+                inlineStyles.flatMap(s => Object.keys(s))
+                    .reduce((acc, k) => { acc[k] = (acc[k] || 0) + 1; return acc; }, {} as Record<string, number>)
+            ).sort((a, b) => b[1] - a[1]).slice(0, 15)
+            , null, 2)}
+
+## Common Rendering Differences
+
+1. **Font Rendering**: MAUI uses native fonts, HTML uses web fonts
+2. **Colors**: MAUI colors may differ from CSS hex values
+3. **Layout**: Flexbox vs MAUI LayoutOptions behave differently
+4. **Images**: MAUI images load from local paths, HTML from relative URLs
+`;
+
+        // Shrani poročilo
+        const reportPath = path.join(context.globalStorageUri.fsPath, 'analysis-report.md');
+        require('fs').writeFileSync(reportPath, report);
+
+        const doc = await vscode.workspace.openTextDocument(reportPath);
+        await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.Three });
+    });
+
+    // Ukaz: Odpri screenshots folder
+    const openScreenshotsFolderCommand = vscode.commands.registerCommand('mauiScreenshot.openFolder', () => {
+        screenshotManager.openScreenshotsFolder();
+    });
+
+    // Ukaz: Seznam screenshotov
+    const listScreenshotsCommand = vscode.commands.registerCommand('mauiScreenshot.list', async () => {
+        const screenshots = screenshotManager.listScreenshots();
+
+        if (screenshots.length === 0) {
+            vscode.window.showInformationMessage('Ni screenshotov. Maps: ' + screenshotManager['_screenshotsDir']);
+            return;
+        }
+
+        const items = screenshots.slice(0, 20).map(s => ({
+            label: s.name,
+            description: s.date.toLocaleString(),
+            path: s.path
+        }));
+
+        const selected = await vscode.window.showQuickPick(items, {
+            placeHolder: 'Izberi screenshot za odpiranje'
+        });
+
+        if (selected) {
+            const doc = await vscode.workspace.openTextDocument(selected.path);
+            await vscode.window.showTextDocument(doc);
+        }
     });
 
     // Registracija vseh dispozablov
     context.subscriptions.push(
         providerRegistration,
-        propertiesTreeView,
         templatesTreeView,
         structureTreeView,
+        codeBehindTreeView,
+        completionRegistration,
         openPreviewCommand,
         editPropertyCommand,
         addPropertyCommand,
@@ -461,15 +973,65 @@ export async function activate(context: vscode.ExtensionContext) {
         createTemplateCommand,
         scaffoldDocumentCommand,
         selectElementByIdCommand,
+        selectElementByCodeCommand,
+        listEmulatorsCommand,
+        startEmulatorCommand,
+        connectMetroCommand,
+        checkMetroStatusCommand,
+        restartAdbCommand,
+        deviceInfoCommand,
+        deviceScreenshotCommand,
+        previewScreenshotCommand,
+        showHtmlCommand,
+        compareScreenshotsCommand,
+        analyzeDifferencesCommand,
+        openScreenshotsFolderCommand,
+        listScreenshotsCommand,
+        emulatorStatusBar,
+        onDidSaveDocument,
         onDidChangeDocument,
         onDidChangeActiveEditor,
         onDidChangeSelection
     );
 
-    // Avtomatsko odpiranje preview-ja če je XAML datoteka odprta
-    if (vscode.window.activeTextEditor?.document.fileName.endsWith('.xaml')) {
+    // Avtomatsko posodobi status bar
+    updateEmulatorStatus().catch(console.error);
+
+    // NEW: Copy AI Design Context command
+    const copyAiContextCommand = vscode.commands.registerCommand('mauiXamlPreview.copyAiContext', async () => {
+        const selected = previewProvider.getSelectedElementContext();
+        if (!selected) {
+            vscode.window.showWarningMessage('Najprej izberi element v preview-u.');
+            return;
+        }
+        const ctx = [
+            `Current selected XAML element:`,
+            `- Type: ${selected.type}`,
+            `- Attributes: ${JSON.stringify(selected.attributes, null, 2)}`,
+            `- Parent: ${selected.parentType || 'unknown'}`,
+            `- Children: ${selected.childCount}`,
+            `- Line range: ${selected.startLine}–${selected.endLine}`,
+            ``,
+            `Rules:`,
+            `- Do not change bindings.`,
+            `- Prefer StaticResource over literal values.`,
+            `- Keep MAUI syntax valid.`,
+            `- Desired task: [OPIŠI NALOGO TUKAJ]`,
+        ].join('\n');
+        await vscode.env.clipboard.writeText(ctx);
+        vscode.window.showInformationMessage('AI Design Context kopiran v odložišče!');
+    });
+    context.subscriptions.push(copyAiContextCommand);
+
+    // Avtomatsko odpiranje preview-ja - spoštuje nastavitev autoOpen
+    const autoOpen = vscode.workspace.getConfiguration('mauiXamlPreview').get<boolean>('autoOpen', false);
+    if (autoOpen && vscode.window.activeTextEditor?.document.fileName.toLowerCase().endsWith('.xaml')) {
+        codeBehindProvider.updateContext(vscode.window.activeTextEditor.document.fileName);
         previewStatusBar.show();
         vscode.commands.executeCommand('mauiXamlPreview.openPreview');
+    } else if (vscode.window.activeTextEditor?.document.fileName.toLowerCase().endsWith('.xaml')) {
+        codeBehindProvider.updateContext(vscode.window.activeTextEditor.document.fileName);
+        previewStatusBar.show();
     }
 }
 

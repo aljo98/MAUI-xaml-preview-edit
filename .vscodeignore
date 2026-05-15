@@ -1,0 +1,17 @@
+.patch_file.js
+patch_file.js
+mcp-test-server.js
+tsconfig.json
+package-lock.json
+LICENSE
+.gitignore
+.vscode/
+.vsixignore
+.github/
+.claude/
+.codacy/
+.pi/
+.ruff_cache/
+vs-ext/
+*.ts
+*.tsx

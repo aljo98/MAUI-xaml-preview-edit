@@ -2,3 +2,19 @@
 
 #Ignore vscode AI rules
 .github\instructions\codacy.instructions.md
+
+# Build output
+out/
+node_modules/
+*.vsix
+
+# Internal tooling
+.pi/
+.ruff_cache/
+vs-ext/
+
+# Test artifacts
+test-samples/*.html
+test-samples/*.js
+mcp-test-server.js
+patch_file.js
