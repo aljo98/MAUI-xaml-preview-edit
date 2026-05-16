@@ -1346,8 +1346,10 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         width: 100%;
         flex: 1;
         min-width: 0;
+        min-height: 0;
         display: flex;
         flex-direction: column;
+        align-items: stretch;
     }
 
     .maui-element {
@@ -1401,10 +1403,12 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
     .maui-contentpage,
     .maui-contentview {
         width: 100%;
-        height: 100%;
         flex: 1;
+        min-height: 0;
         display: flex;
         flex-direction: column;
+        align-items: stretch;
+        overflow: hidden;
     }
 
     .maui-grid {
@@ -1514,8 +1518,10 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
     }
 
     .maui-scrollview {
+        width: 100%;
         max-height: 100%;
         overflow: auto;
+        flex-shrink: 1;
     }
 
     .binding-placeholder {
@@ -2479,8 +2485,9 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                 // If any row uses fr/*, grid needs a defined height to fill parent
                 const hasFrRow = (element.metadata.gridRows || []).some(r => r.trim() === '*' || r.trim().endsWith('*'));
                 if (hasFrRow) {
-                    style.set('height', '100%');
                     style.set('flex', '1');
+                    style.set('min-height', '0');
+                    style.set('align-self', 'stretch');
                 }
 
                 const colSpacing = attrs['ColumnSpacing'] || '0';
@@ -2551,7 +2558,18 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                 break;
             }
             case 'ScrollView': {
-                style.set('overflow', 'auto');
+                const scrollOrientation = (attrs['Orientation'] || 'vertical').toLowerCase();
+                if (scrollOrientation === 'horizontal') {
+                    style.set('overflow-x', 'auto');
+                    style.set('overflow-y', 'hidden');
+                    style.set('width', '100%');
+                } else {
+                    style.set('overflow-x', 'hidden');
+                    style.set('overflow-y', 'auto');
+                    style.set('width', '100%');
+                    style.set('flex', '1');
+                    style.set('min-height', '0');
+                }
                 break;
             }
             case 'Label': {
@@ -2782,6 +2800,8 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                 style.set('align-self', 'flex-start');
             } else if (normalized === 'fill' || normalized === 'fillandexpand') {
                 style.set('align-self', 'stretch');
+                style.set('flex', '1');
+                style.set('min-height', '0');
             }
         }
     }
