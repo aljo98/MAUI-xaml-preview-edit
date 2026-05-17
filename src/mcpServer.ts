@@ -1,7 +1,8 @@
 import * as http from 'http';
 import * as vscode from 'vscode';
+import { randomUUID } from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { z } from 'zod';
 import type { MauiXamlPreviewProvider } from './previewProvider';
 
@@ -11,13 +12,12 @@ const DEFAULT_PORT = 3100;
  * MCP Server for MAUI XAML Preview extension.
  * Exposes tools so AI agents (Windsurf, Claude, etc.) can interact with the preview.
  *
- * Transport: SSE on http://localhost:{port}/sse
- * Message endpoint: POST http://localhost:{port}/message
+ * Transport: Streamable HTTP on http://localhost:{port}/mcp
  */
 export class MauiMcpServer {
     private _server: McpServer;
     private _httpServer: http.Server | undefined;
-    private _transport: SSEServerTransport | undefined;
+    private _transport: StreamableHTTPServerTransport | undefined;
     private _previewProvider: MauiXamlPreviewProvider;
     private _port: number;
 
@@ -280,12 +280,21 @@ export class MauiMcpServer {
     // ─── Lifecycle ───────────────────────────────────────────
 
     public async start(): Promise<void> {
+        // Create Streamable HTTP transport (stateless for simplicity)
+        this._transport = new StreamableHTTPServerTransport({
+            sessionIdGenerator: () => randomUUID(),
+        });
+
+        // Connect MCP server to transport
+        await this._server.connect(this._transport);
+
         return new Promise((resolve, reject) => {
             this._httpServer = http.createServer(async (req, res) => {
                 // CORS headers for local connections
                 res.setHeader('Access-Control-Allow-Origin', '*');
-                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-                res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+                res.setHeader('Access-Control-Allow-Headers', 'Content-Type, mcp-session-id');
+                res.setHeader('Access-Control-Expose-Headers', 'mcp-session-id');
 
                 if (req.method === 'OPTIONS') {
                     res.writeHead(204);
@@ -295,17 +304,16 @@ export class MauiMcpServer {
 
                 const url = new URL(req.url || '/', `http://localhost:${this._port}`);
 
-                if (url.pathname === '/sse') {
-                    // New SSE connection
-                    this._transport = new SSEServerTransport('/message', res);
-                    await this._server.connect(this._transport);
-                } else if (url.pathname === '/message' && req.method === 'POST') {
-                    // Message from client
-                    if (this._transport) {
-                        await this._transport.handlePostMessage(req, res);
-                    } else {
-                        res.writeHead(400, { 'Content-Type': 'application/json' });
-                        res.end(JSON.stringify({ error: 'No active SSE connection' }));
+                if (url.pathname === '/mcp') {
+                    // Delegate all /mcp traffic to StreamableHTTPServerTransport
+                    try {
+                        await this._transport!.handleRequest(req, res);
+                    } catch (err) {
+                        console.error('[MCP] Request handling error:', err);
+                        if (!res.headersSent) {
+                            res.writeHead(500, { 'Content-Type': 'application/json' });
+                            res.end(JSON.stringify({ error: 'Internal MCP error' }));
+                        }
                     }
                 } else if (url.pathname === '/health') {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -327,7 +335,7 @@ export class MauiMcpServer {
             });
 
             this._httpServer.listen(this._port, '127.0.0.1', () => {
-                console.log(`[MCP] MAUI XAML Preview MCP server running on http://127.0.0.1:${this._port}`);
+                console.log(`[MCP] MAUI XAML Preview MCP server running on http://127.0.0.1:${this._port}/mcp`);
                 vscode.window.showInformationMessage(`MCP server aktiven na portu ${this._port}`);
                 resolve();
             });
