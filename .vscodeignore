@@ -13,5 +13,10 @@ LICENSE
 .pi/
 .ruff_cache/
 vs-ext/
+src/
+test-samples/
+docs/
 *.ts
 *.tsx
+**/*.map
+**/*.d.ts.map

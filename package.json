@@ -227,6 +227,16 @@
         "type": "boolean",
         "default": false,
         "description": "Avtomatsko odpri MAUI XAML Preview ko odprete .xaml datoteko."
+      },
+      "mauiXamlPreview.mcpEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Zaženi MCP (Model Context Protocol) server ob aktivaciji. Omogoča AI agentom interakcijo s preview-jem."
+      },
+      "mauiXamlPreview.mcpPort": {
+        "type": "number",
+        "default": 3100,
+        "description": "Port za MCP SSE server (privzeto 3100)."
       }
     }
   },
@@ -242,6 +252,7 @@
     "typescript": "5.9.2"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "fast-xml-parser": "4.5.3"
   }
 }

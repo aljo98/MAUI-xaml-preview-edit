@@ -151,6 +151,59 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         };
     }
 
+    /**
+     * Returns a flat list of all parsed elements (for MCP tool: list_elements).
+     */
+    public getAllElements(): Array<{
+        id: string; type: string; name?: string;
+        startLine?: number; endLine?: number;
+        parentType?: string; childCount: number;
+        attributes: Record<string, string>;
+    }> {
+        const result: Array<any> = [];
+        const walk = (el: ParsedElement, parentType?: string) => {
+            result.push({
+                id: el.id,
+                type: el.type,
+                name: el.name,
+                startLine: el.metadata?.startLine,
+                endLine: el.metadata?.endLine,
+                parentType,
+                childCount: el.children?.length ?? 0,
+                attributes: el.resolvedAttributes,
+            });
+            for (const child of el.children || []) {
+                walk(child, el.type);
+            }
+        };
+        for (const root of this._parsedElements) {
+            walk(root);
+        }
+        return result;
+    }
+
+    /**
+     * Returns a single parsed element by its ID (for MCP tool: get_element).
+     */
+    public getElementById(elementId: string): {
+        id: string; type: string; name?: string;
+        startLine?: number; endLine?: number;
+        attributes: Record<string, string>;
+        children: Array<{ id: string; type: string }>;
+    } | undefined {
+        const el = this._elementLookup.get(elementId);
+        if (!el) return undefined;
+        return {
+            id: el.id,
+            type: el.type,
+            name: el.name,
+            startLine: el.metadata?.startLine,
+            endLine: el.metadata?.endLine,
+            attributes: el.resolvedAttributes,
+            children: (el.children || []).map(c => ({ id: c.id, type: c.type })),
+        };
+    }
+
     // PUBLIC: Select elements by code behind binding/event name
     public async selectElementByCode(name: string, isCommand: boolean) {
         if (!this._currentPanel) return;

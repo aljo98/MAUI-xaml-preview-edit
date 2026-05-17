@@ -7,6 +7,9 @@ import { CodeBehindProvider } from './codeBehindProvider';
 import { MauiCompletionProvider } from './completionProvider';
 import { emulatorManager, EmulatorDevice } from './emulatorManager';
 import { ScreenshotManager } from './screenshotManager';
+import { MauiMcpServer } from './mcpServer';
+
+let mcpServerInstance: MauiMcpServer | undefined;
 
 /**
  * Safely edit or insert an attribute ONLY within the opening tag of the selected element.
@@ -1023,6 +1026,20 @@ ${JSON.stringify(
     });
     context.subscriptions.push(copyAiContextCommand);
 
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // MCP SERVER — AI agent integration
+    // ═══════════════════════════════════════════════════════════════════════════════
+    const mcpEnabled = vscode.workspace.getConfiguration('mauiXamlPreview').get<boolean>('mcpEnabled', true);
+    if (mcpEnabled) {
+        try {
+            mcpServerInstance = new MauiMcpServer(previewProvider);
+            await mcpServerInstance.start();
+            console.log(`[MCP] Server started on port ${mcpServerInstance.port}`);
+        } catch (err) {
+            console.error('[MCP] Failed to start MCP server:', err);
+        }
+    }
+
     // Avtomatsko odpiranje preview-ja - spoštuje nastavitev autoOpen
     const autoOpen = vscode.workspace.getConfiguration('mauiXamlPreview').get<boolean>('autoOpen', false);
     if (autoOpen && vscode.window.activeTextEditor?.document.fileName.toLowerCase().endsWith('.xaml')) {
@@ -1035,6 +1052,10 @@ ${JSON.stringify(
     }
 }
 
-export function deactivate() {
+export async function deactivate() {
     console.log('MAUI XAML Preview extension se deaktivira...');
+    if (mcpServerInstance) {
+        await mcpServerInstance.stop();
+        mcpServerInstance = undefined;
+    }
 }
