@@ -2,7 +2,7 @@ import * as http from 'http';
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { SSEServerTransport } from '@modelcontextprotocol/sdk/server/sse.js';
 import { z } from 'zod';
 import type { MauiXamlPreviewProvider } from './previewProvider';
 
@@ -12,34 +12,35 @@ const DEFAULT_PORT = 3100;
  * MCP Server for MAUI XAML Preview extension.
  * Exposes tools so AI agents (Windsurf, Claude, etc.) can interact with the preview.
  *
- * Transport: Streamable HTTP on http://localhost:{port}/mcp
+ * Transport: SSE on http://localhost:{port}/sse  +  POST messages on /message
  */
 export class MauiMcpServer {
-    private _server: McpServer;
     private _httpServer: http.Server | undefined;
-    private _transport: StreamableHTTPServerTransport | undefined;
     private _previewProvider: MauiXamlPreviewProvider;
     private _port: number;
+    private _sessions: Map<string, { server: McpServer; transport: SSEServerTransport }> = new Map();
 
     constructor(previewProvider: MauiXamlPreviewProvider) {
         this._previewProvider = previewProvider;
         this._port = vscode.workspace.getConfiguration('mauiXamlPreview').get<number>('mcpPort', DEFAULT_PORT);
+    }
 
-        this._server = new McpServer({
+    private _createServer(): McpServer {
+        const server = new McpServer({
             name: 'maui-xaml-preview',
             version: '0.1.7',
         });
-
-        this._registerTools();
-        this._registerResources();
+        this._registerTools(server);
+        this._registerResources(server);
+        return server;
     }
 
     // ─── Tools ───────────────────────────────────────────────
 
-    private _registerTools(): void {
+    private _registerTools(server: McpServer): void {
 
         // 1. Get selected element context
-        this._server.tool(
+        server.tool(
             'get_selected_element',
             'Returns the currently selected XAML element with type, attributes, parent, children, and line range.',
             {},
@@ -58,7 +59,7 @@ export class MauiMcpServer {
         );
 
         // 2. List all elements in parsed tree
-        this._server.tool(
+        server.tool(
             'list_elements',
             'Returns a flat list of all parsed XAML elements with id, type, name, line range, and parent.',
             {},
@@ -74,7 +75,7 @@ export class MauiMcpServer {
         );
 
         // 3. Get element by ID
-        this._server.tool(
+        server.tool(
             'get_element',
             'Returns detailed info about a specific XAML element by its ID.',
             { elementId: z.string().describe('The element ID (e.g., "el_3")') },
@@ -93,7 +94,7 @@ export class MauiMcpServer {
         );
 
         // 4. Select element in preview
-        this._server.tool(
+        server.tool(
             'select_element',
             'Selects an element in the XAML preview by its ID. Highlights it in the editor and properties panel.',
             { elementId: z.string().describe('The element ID to select') },
@@ -108,7 +109,7 @@ export class MauiMcpServer {
         );
 
         // 5. Edit element property (safe, scoped edit)
-        this._server.tool(
+        server.tool(
             'edit_property',
             'Edits a property on a specific XAML element. Only modifies the attribute within the element\'s opening tag.',
             {
@@ -181,7 +182,7 @@ export class MauiMcpServer {
         );
 
         // 6. Get current XAML file content
-        this._server.tool(
+        server.tool(
             'get_xaml_content',
             'Returns the full XAML source of the currently open file.',
             {},
@@ -200,7 +201,7 @@ export class MauiMcpServer {
         );
 
         // 7. Get preview HTML
-        this._server.tool(
+        server.tool(
             'get_preview_html',
             'Returns the generated HTML preview of the current XAML file.',
             {},
@@ -219,7 +220,7 @@ export class MauiMcpServer {
         );
 
         // 8. Get resource/style/color suggestions
-        this._server.tool(
+        server.tool(
             'get_design_suggestions',
             'Returns available design tokens: colors, styles, and resource keys from the current XAML context.',
             {},
@@ -240,8 +241,8 @@ export class MauiMcpServer {
 
     // ─── Resources ───────────────────────────────────────────
 
-    private _registerResources(): void {
-        this._server.resource(
+    private _registerResources(server: McpServer): void {
+        server.resource(
             'element-tree',
             'maui://element-tree',
             { description: 'Current XAML element tree structure', mimeType: 'application/json' },
@@ -257,7 +258,7 @@ export class MauiMcpServer {
             }
         );
 
-        this._server.resource(
+        server.resource(
             'design-tokens',
             'maui://design-tokens',
             { description: 'Available design tokens (colors, styles, resources)', mimeType: 'application/json' },
@@ -280,21 +281,12 @@ export class MauiMcpServer {
     // ─── Lifecycle ───────────────────────────────────────────
 
     public async start(): Promise<void> {
-        // Create Streamable HTTP transport (stateless for simplicity)
-        this._transport = new StreamableHTTPServerTransport({
-            sessionIdGenerator: () => randomUUID(),
-        });
-
-        // Connect MCP server to transport
-        await this._server.connect(this._transport);
-
         return new Promise((resolve, reject) => {
             this._httpServer = http.createServer(async (req, res) => {
                 // CORS headers for local connections
                 res.setHeader('Access-Control-Allow-Origin', '*');
-                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-                res.setHeader('Access-Control-Allow-Headers', 'Content-Type, mcp-session-id');
-                res.setHeader('Access-Control-Expose-Headers', 'mcp-session-id');
+                res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+                res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
                 if (req.method === 'OPTIONS') {
                     res.writeHead(204);
@@ -304,20 +296,39 @@ export class MauiMcpServer {
 
                 const url = new URL(req.url || '/', `http://localhost:${this._port}`);
 
-                if (url.pathname === '/mcp') {
-                    // Delegate all /mcp traffic to StreamableHTTPServerTransport
-                    try {
-                        await this._transport!.handleRequest(req, res);
-                    } catch (err) {
-                        console.error('[MCP] Request handling error:', err);
-                        if (!res.headersSent) {
-                            res.writeHead(500, { 'Content-Type': 'application/json' });
-                            res.end(JSON.stringify({ error: 'Internal MCP error' }));
-                        }
+                if (url.pathname === '/sse' && req.method === 'GET') {
+                    // New SSE connection — create a fresh McpServer + transport per session
+                    const server = this._createServer();
+                    const transport = new SSEServerTransport('/message', res);
+                    const sessionId = transport.sessionId;
+                    this._sessions.set(sessionId, { server, transport });
+
+                    // Clean up when connection closes
+                    res.on('close', () => {
+                        this._sessions.delete(sessionId);
+                        console.log(`[MCP] SSE session ${sessionId} closed`);
+                    });
+
+                    await server.connect(transport);
+                    console.log(`[MCP] SSE session ${sessionId} connected`);
+                } else if (url.pathname === '/message' && req.method === 'POST') {
+                    // Route POST to the correct session transport
+                    const sessionId = url.searchParams.get('sessionId');
+                    if (sessionId && this._sessions.has(sessionId)) {
+                        const session = this._sessions.get(sessionId)!;
+                        await session.transport.handlePostMessage(req, res);
+                    } else {
+                        res.writeHead(400, { 'Content-Type': 'application/json' });
+                        res.end(JSON.stringify({ error: 'Invalid or missing sessionId' }));
                     }
                 } else if (url.pathname === '/health') {
                     res.writeHead(200, { 'Content-Type': 'application/json' });
-                    res.end(JSON.stringify({ status: 'ok', name: 'maui-xaml-preview-mcp', port: this._port }));
+                    res.end(JSON.stringify({
+                        status: 'ok',
+                        name: 'maui-xaml-preview-mcp',
+                        port: this._port,
+                        activeSessions: this._sessions.size
+                    }));
                 } else {
                     res.writeHead(404);
                     res.end('Not found');
@@ -335,7 +346,7 @@ export class MauiMcpServer {
             });
 
             this._httpServer.listen(this._port, '127.0.0.1', () => {
-                console.log(`[MCP] MAUI XAML Preview MCP server running on http://127.0.0.1:${this._port}/mcp`);
+                console.log(`[MCP] MAUI XAML Preview MCP server running on http://127.0.0.1:${this._port}/sse`);
                 vscode.window.showInformationMessage(`MCP server aktiven na portu ${this._port}`);
                 resolve();
             });
@@ -347,10 +358,14 @@ export class MauiMcpServer {
     }
 
     public async stop(): Promise<void> {
-        if (this._transport) {
-            await this._transport.close();
-            this._transport = undefined;
+        // Close all active sessions
+        for (const [id, session] of this._sessions) {
+            try {
+                await session.transport.close();
+            } catch (_) { /* ignore */ }
         }
+        this._sessions.clear();
+
         if (this._httpServer) {
             return new Promise((resolve) => {
                 this._httpServer!.close(() => {
