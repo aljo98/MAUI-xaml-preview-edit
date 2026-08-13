@@ -117,18 +117,16 @@ class ZoomManager {
 
                 zoomIn() {
                     const zoomSteps = [25, 50, 75, 100, 125, 150, 200, 300, 400];
-                    const currentIndex = zoomSteps.indexOf(this.currentZoom);
-                    if (currentIndex < zoomSteps.length - 1) {
-                        this.setZoom(zoomSteps[currentIndex + 1]);
-                    }
+                    // Find first step strictly greater than current zoom
+                    const next = zoomSteps.find(s => s > this.currentZoom);
+                    if (next !== undefined) this.setZoom(next);
                 }
 
                 zoomOut() {
                     const zoomSteps = [25, 50, 75, 100, 125, 150, 200, 300, 400];
-                    const currentIndex = zoomSteps.indexOf(this.currentZoom);
-                    if (currentIndex > 0) {
-                        this.setZoom(zoomSteps[currentIndex - 1]);
-                    }
+                    // Find last step strictly less than current zoom
+                    const prev = [...zoomSteps].reverse().find(s => s < this.currentZoom);
+                    if (prev !== undefined) this.setZoom(prev);
                 }
 
                 zoomActualSize() {

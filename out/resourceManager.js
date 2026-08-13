@@ -43,6 +43,8 @@ class ResourceManager {
     constructor() {
         this.resourceCache = new Map();
         this.styleCache = new Map();
+        this.fileMtimeCache = new Map();
+        this.fileWatchers = new Map();
         this.xmlParser = new fast_xml_parser_1.XMLParser({
             ignoreAttributes: false,
             attributeNamePrefix: '@_',
@@ -88,11 +90,53 @@ class ResourceManager {
             return { resources: [], styles: [] };
         }
     }
+    watchFile(filePath) {
+        if (this.fileWatchers.has(filePath))
+            return;
+        try {
+            const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(path.dirname(filePath), path.basename(filePath)));
+            const invalidate = () => {
+                this.resourceCache.delete(filePath);
+                this.styleCache.delete(filePath);
+                this.fileMtimeCache.delete(filePath);
+                console.log(`[ResourceManager] Cache invalidated (file changed): ${path.basename(filePath)}`);
+                this.onResourceFileChanged?.();
+            };
+            watcher.onDidChange(invalidate);
+            watcher.onDidDelete(invalidate);
+            this.fileWatchers.set(filePath, watcher);
+            console.log(`[ResourceManager] Watching: ${path.basename(filePath)}`);
+        }
+        catch (e) {
+            console.warn(`[ResourceManager] Could not watch ${filePath}:`, e);
+        }
+    }
+    dispose() {
+        for (const w of this.fileWatchers.values())
+            w.dispose();
+        this.fileWatchers.clear();
+        this.clearCache();
+        console.log('[ResourceManager] Disposed');
+    }
     async loadResourcesFromFile(filePath) {
-        if (this.resourceCache.has(filePath)) {
-            const cachedResources = this.resourceCache.get(filePath) || [];
-            const cachedStyles = this.styleCache.get(filePath) || [];
-            return { resources: cachedResources, styles: cachedStyles };
+        // Check mtime for cache freshness (secondary guard beside file watcher)
+        if (this.resourceCache.has(filePath) && fs.existsSync(filePath)) {
+            const currentMtime = fs.statSync(filePath).mtimeMs;
+            if (currentMtime === this.fileMtimeCache.get(filePath)) {
+                return {
+                    resources: this.resourceCache.get(filePath) || [],
+                    styles: this.styleCache.get(filePath) || []
+                };
+            }
+            // File changed — invalidate
+            this.resourceCache.delete(filePath);
+            this.styleCache.delete(filePath);
+        }
+        else if (this.resourceCache.has(filePath)) {
+            return {
+                resources: this.resourceCache.get(filePath) || [],
+                styles: this.styleCache.get(filePath) || []
+            };
         }
         try {
             if (!fs.existsSync(filePath)) {
@@ -103,9 +147,11 @@ class ResourceManager {
             const parsed = this.xmlParser.parse(content);
             const resources = this.extractResources(parsed);
             const styles = this.extractStyles(parsed);
-            // Cache the results
+            // Cache the results + mtime
             this.resourceCache.set(filePath, resources);
             this.styleCache.set(filePath, styles);
+            this.fileMtimeCache.set(filePath, fs.statSync(filePath).mtimeMs);
+            this.watchFile(filePath);
             console.log(`[ResourceManager] Loaded from ${path.basename(filePath)}: ${resources.length} resources, ${styles.length} styles`);
             return { resources, styles };
         }

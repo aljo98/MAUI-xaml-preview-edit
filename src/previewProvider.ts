@@ -18,6 +18,7 @@ interface ParsedElement {
     textContent?: string;
     metadata: {
         startLine?: number;
+        endLine?: number;
         startIndex?: number;
         gridRows?: string[];
         gridColumns?: string[];
@@ -27,6 +28,7 @@ interface ParsedElement {
         gradientEndPoint?: string;
         isSynthetic?: boolean;
         inlineStyles?: Array<{ targetType: string; setters: Record<string, string> }>;
+        parentType?: string;
     };
 }
 
@@ -66,6 +68,7 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
     private _propertiesTreeView: vscode.TreeView<PropertyTreeItem> | undefined;
     private _structureProvider: MauiPropertiesProvider | undefined;
     private _structureTreeView: vscode.TreeView<PropertyTreeItem> | undefined;
+    private _propertiesWebviewProvider: import('./propertiesWebviewProvider').PropertiesWebviewProvider | undefined;
 
     private _resourceManager: ResourceManager;
     private _platformManager: PlatformManager;
@@ -81,6 +84,134 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
     private _elementIdCounter = 0;
     private _currentSelectedElementId: string | undefined;
     private _viewMode: 'full' | 'selected' = 'full';
+
+    // Design-time sample data loaded from ViewModel / code-behind C# files
+    private _designTimeData: Map<string, string> = new Map();
+
+    // Webview message callbacks
+    private _messageCallbacks: ((msg: any) => void)[] = [];
+
+    /**
+     * Register callback for webview messages
+     */
+    public addMessageCallback(cb: (msg: any) => void): void {
+        this._messageCallbacks.push(cb);
+    }
+
+    /**
+     * Notify all message callbacks
+     */
+    private _notifyMessageCallbacks(msg: any): void {
+        for (const cb of this._messageCallbacks) {
+            try { cb(msg); } catch (e) { console.error('[PreviewProvider] Callback error:', e); }
+        }
+    }
+
+    /**
+     * Get current HTML content for screenshot/inspection
+     */
+    public getCurrentHtml(): string {
+        return this._generatePreviewHtml();
+    }
+
+    /**
+     * Returns the line range of a parsed element by its ID.
+     * Used by extension.ts safeEditAttribute to restrict edits to the correct element.
+     */
+    public getElementRange(elementId: string): { startLine: number; endLine: number } | undefined {
+        const info = this._elementMap.get(elementId);
+        if (info) return { startLine: info.startLine, endLine: info.endLine };
+        // Fallback: check parsed elements lookup
+        const el = this._elementLookup.get(elementId);
+        if (el?.metadata?.startLine !== undefined) {
+            return { startLine: el.metadata.startLine, endLine: el.metadata.endLine ?? el.metadata.startLine };
+        }
+        return undefined;
+    }
+
+    /**
+     * Returns context of the currently selected element for AI clipboard copy.
+     */
+    public getSelectedElementContext(): {
+        type: string;
+        attributes: Record<string, string>;
+        parentType: string | undefined;
+        childCount: number;
+        startLine: number;
+        endLine: number;
+    } | undefined {
+        if (!this._currentSelectedElementId) return undefined;
+        const el = this._elementLookup.get(this._currentSelectedElementId);
+        if (!el) return undefined;
+        const range = this.getElementRange(this._currentSelectedElementId);
+        return {
+            type: el.type,
+            attributes: el.resolvedAttributes as Record<string, string>,
+            parentType: el.metadata?.parentType,
+            childCount: el.children?.length ?? 0,
+            startLine: range?.startLine ?? el.metadata?.startLine ?? 0,
+            endLine: range?.endLine ?? el.metadata?.endLine ?? 0,
+        };
+    }
+
+    /**
+     * Returns a flat list of all parsed elements (for MCP tool: list_elements).
+     */
+    public getAllElements(): Array<{
+        id: string; type: string; name?: string;
+        startLine?: number; endLine?: number;
+        parentType?: string; childCount: number;
+        attributes: Record<string, string>;
+    }> {
+        const result: Array<any> = [];
+        const walk = (el: ParsedElement, parentType?: string) => {
+            result.push({
+                id: el.id,
+                type: el.type,
+                name: el.name,
+                startLine: el.metadata?.startLine,
+                endLine: el.metadata?.endLine,
+                parentType,
+                childCount: el.children?.length ?? 0,
+                attributes: el.resolvedAttributes,
+            });
+            for (const child of el.children || []) {
+                walk(child, el.type);
+            }
+        };
+        for (const root of this._parsedElements) {
+            walk(root);
+        }
+        return result;
+    }
+
+    /**
+     * Returns a single parsed element by its ID (for MCP tool: get_element).
+     */
+    public getElementById(elementId: string): {
+        id: string; type: string; name?: string;
+        startLine?: number; endLine?: number;
+        attributes: Record<string, string>;
+        children: Array<{ id: string; type: string }>;
+    } | undefined {
+        const el = this._elementLookup.get(elementId);
+        if (!el) return undefined;
+        return {
+            id: el.id,
+            type: el.type,
+            name: el.name,
+            startLine: el.metadata?.startLine,
+            endLine: el.metadata?.endLine,
+            attributes: el.resolvedAttributes,
+            children: (el.children || []).map(c => ({ id: c.id, type: c.type })),
+        };
+    }
+
+    // PUBLIC: Select elements by code behind binding/event name
+    public async selectElementByCode(name: string, isCommand: boolean) {
+        if (!this._currentPanel) return;
+        this._currentPanel.webview.postMessage({ type: 'selectElementByCode', name, isCommand });
+    }
 
     private _xmlParser: XMLParser;
 
@@ -178,6 +309,11 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         console.log('[PreviewProvider] Properties provider set');
     }
 
+    public setPropertiesWebviewProvider(provider: import('./propertiesWebviewProvider').PropertiesWebviewProvider) {
+        this._propertiesWebviewProvider = provider;
+        console.log('[PreviewProvider] Properties webview provider set');
+    }
+
     public setStructureProvider(provider: MauiPropertiesProvider, treeView: vscode.TreeView<PropertyTreeItem>) {
         this._structureProvider = provider;
         this._structureTreeView = treeView;
@@ -245,6 +381,177 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         }, null);
     }
 
+    // ─── Design-time data loading ─────────────────────────────────────────────
+
+    /**
+     * Convert camelCase/lowerCase to PascalCase (e.g. "_partnerSearchText" → "PartnerSearchText")
+     */
+    private _toPascalCase(name: string): string {
+        const stripped = name.startsWith('_') ? name.slice(1) : name;
+        return stripped.charAt(0).toUpperCase() + stripped.slice(1);
+    }
+
+    /**
+     * Heuristic sample values based on property name patterns.
+     * Used when no explicit value was extracted from the ViewModel.
+     */
+    private _getHeuristicSampleValue(propName: string): string | undefined {
+        const lower = propName.toLowerCase();
+        if (lower.includes('number') || lower.includes('code')) { return 'OR-2025-001'; }
+        if (lower.includes('customername') || lower.includes('partnername')) { return 'Acme Corp d.o.o.'; }
+        if (lower.includes('name')) { return 'Acme Corp d.o.o.'; }
+        if (lower.includes('email')) { return 'info@example.com'; }
+        if (lower.includes('phone') || lower.includes('tel')) { return '+386 1 234 5678'; }
+        if (lower.includes('grandtotal') || lower.includes('grand_total')) { return '1250.00'; }
+        if (lower.includes('total') || lower.includes('amount') || lower.includes('vsota')) { return '1250.00'; }
+        if (lower.includes('price') || lower.includes('cena')) { return '125.00'; }
+        if (lower.includes('date') || lower.includes('datum')) { return new Date().toLocaleDateString('sl-SI'); }
+        if (lower.includes('status')) { return 'draft'; }
+        if (lower.includes('person') || lower.includes('prodajalec')) { return 'Janez Novak'; }
+        if (lower.includes('address') || lower.includes('naslov')) { return 'Slovenska 1, Ljubljana'; }
+        if (lower.includes('note') || lower.includes('opomba')) { return 'Opomba...'; }
+        if (lower.includes('description') || lower.includes('opis')) { return 'Opis...'; }
+        if (lower.includes('display') || lower.includes('label')) { return propName; }
+        if (lower.includes('error') || lower.includes('message')) { return ''; }
+        if (lower.includes('text') || lower.includes('search')) { return ''; }
+        if (lower.includes('title')) { return propName; }
+        return undefined;
+    }
+
+    /**
+     * Extract design-time sample data from a C# ViewModel or code-behind file.
+     */
+    private _extractDesignTimeDataFromCs(csContent: string): void {
+        if (!csContent) { return; }
+        let m: RegExpExecArray | null;
+
+        // 1. Static string arrays: public static readonly string[] StatusOptions = { "a", "b" };
+        const staticArrRe = /public\s+static\s+(?:readonly\s+)?(?:string\[\]|List<string>|IReadOnlyList<string>)\s+(\w+)\s*(?:=[^{]*)?\{([^}]+)\}/gm;
+        while ((m = staticArrRe.exec(csContent)) !== null) {
+            const pName = m[1];
+            const items = (m[2].match(/"([^"]*)"/g) || []).map(s => s.slice(1, -1));
+            if (items.length > 0 && !this._designTimeData.has(`${pName}__items`)) {
+                this._designTimeData.set(`${pName}__items`, JSON.stringify(items));
+                if (!this._designTimeData.has(pName)) { this._designTimeData.set(pName, items[0]); }
+            }
+        }
+
+        // 2. Private string backing field with literal: private string _foo = "bar";
+        const strFieldRe = /private\s+string\s+(_\w+)\s*=\s*"([^"]*)"/gm;
+        while ((m = strFieldRe.exec(csContent)) !== null) {
+            const pName = this._toPascalCase(m[1]);
+            if (!this._designTimeData.has(pName)) { this._designTimeData.set(pName, m[2]); }
+        }
+
+        // 3. Simple expression-bodied string getter: public string Foo => "bar";
+        const simpleGetterRe = /public\s+string\s+(\w+)\s*=>\s*"([^"]*)"\s*;/gm;
+        while ((m = simpleGetterRe.exec(csContent)) !== null) {
+            this._designTimeData.set(m[1], m[2]);
+        }
+
+        // 4. Ternary getter — take first literal: public string PageTitle => x == 0 ? "Novo naročilo" : ...
+        const ternaryRe = /public\s+string\s+(\w+)\s*=>\s*[^?;{]+\?\s*"([^"]+)"/gm;
+        while ((m = ternaryRe.exec(csContent)) !== null) {
+            if (!this._designTimeData.has(m[1])) { this._designTimeData.set(m[1], m[2]); }
+        }
+
+        // 5. Null-coalesce getter: public string Foo => _x ?? "fallback"  or  ?? string.Empty
+        const nullCoalRe = /public\s+string[?]?\s+(\w+)\s*=>\s*[\w._]+\s*\?\?\s*(?:"([^"]*)"|(string\.Empty))/gm;
+        while ((m = nullCoalRe.exec(csContent)) !== null) {
+            if (!this._designTimeData.has(m[1])) {
+                this._designTimeData.set(m[1], m[2] ?? '');
+            }
+        }
+
+        // 6. Bool backing field: private bool _foo = true/false;
+        const boolFieldRe = /private\s+bool\s+(_\w+)\s*(?:=\s*(true|false))?[;,]/gm;
+        while ((m = boolFieldRe.exec(csContent)) !== null) {
+            const pName = this._toPascalCase(m[1]);
+            if (!this._designTimeData.has(pName)) { this._designTimeData.set(pName, m[2] || 'false'); }
+        }
+
+        // 7. Bool computed: public bool HasError => ... → default false
+        const boolComputedRe = /public\s+bool\s+(\w+)\s*=>/gm;
+        while ((m = boolComputedRe.exec(csContent)) !== null) {
+            if (!this._designTimeData.has(m[1])) { this._designTimeData.set(m[1], 'false'); }
+        }
+
+        // 8. Inline string assignments (e.g. in Initialise/constructor): Status = "draft"
+        //    Only safe values ≤40 chars, no interpolation
+        const inlineStrRe = /(?:_order\.|this\.)?([A-Z]\w{1,39})\s*=\s*"([^"]{0,40})"\s*[,;]/gm;
+        while ((m = inlineStrRe.exec(csContent)) !== null) {
+            if (!this._designTimeData.has(m[1])) {
+                this._designTimeData.set(m[1], m[2]);
+            }
+        }
+    }
+
+    /**
+     * Load design-time data from the .xaml.cs code-behind and from the ViewModel
+     * identified by x:DataType on the root element.
+     */
+    private async _loadDesignTimeData(document: vscode.TextDocument): Promise<void> {
+        this._designTimeData.clear();
+        try {
+            const xamlFilePath = document.fileName;
+            const xamlContent = document.getText();
+
+            // Read .xaml.cs code-behind (may not exist for MVVM)
+            const codeBehindPath = xamlFilePath + '.cs';
+            if (fs.existsSync(codeBehindPath)) {
+                const cbc = fs.readFileSync(codeBehindPath, 'utf-8');
+                this._extractDesignTimeDataFromCs(cbc);
+            }
+
+            // Find ViewModel class name from x:DataType="vm:SomeViewModel"
+            const dtMatch = xamlContent.match(/x:DataType\s*=\s*"([^"]+)"/);
+            if (!dtMatch) { return; }
+            const classNameMatch = dtMatch[1].match(/(?:[a-z]\w*:)?(\w+)$/i);
+            if (!classNameMatch) { return; }
+            const className = classNameMatch[1];
+
+            const files = await vscode.workspace.findFiles(`**/${className}.cs`, '**/obj/**', 3);
+            for (const fileUri of files) {
+                try {
+                    const vmContent = fs.readFileSync(fileUri.fsPath, 'utf-8');
+                    this._extractDesignTimeDataFromCs(vmContent);
+                    console.log(`[PreviewProvider] Design-time data loaded from ${fileUri.fsPath}`);
+                    break;
+                } catch (_) { /* ignore */ }
+            }
+        } catch (e) {
+            console.warn('[PreviewProvider] _loadDesignTimeData error:', e);
+        }
+    }
+
+    /**
+     * Resolve a binding property path to a design-time display string.
+     * Checks _designTimeData first, then falls back to heuristic patterns.
+     * Returns undefined if nothing matches (caller renders plain placeholder).
+     */
+    private _resolveBindingValue(propName: string, formatStr?: string): string | undefined {
+        let value: string | undefined = this._designTimeData.get(propName);
+        if (value === undefined) {
+            value = this._getHeuristicSampleValue(propName);
+        }
+        if (value === undefined) { return undefined; }
+        if (!formatStr) { return value; }
+
+        // Apply StringFormat — strip leading {}
+        const fmt = formatStr.replace(/^\{\}\s*/, '');
+        const numVal = parseFloat(value.replace(',', '.')) || 0;
+        const result = fmt
+            .replace(/\{0:N(\d+)\}/ig, (_: string, d: string) =>
+                numVal.toLocaleString('de-DE', { minimumFractionDigits: Number(d), maximumFractionDigits: Number(d) }))
+            .replace(/\{0:F(\d+)\}/ig, (_: string, d: string) => numVal.toFixed(Number(d)))
+            .replace(/\{0:dd\.MM\.yyyy\}/ig, () => value ?? '')
+            .replace(/\{0:[^}]+\}/g, value ?? '')
+            .replace(/\{0\}/g, value ?? '');
+        return result;
+    }
+
+    // ─── End design-time data loading ────────────────────────────────────────
+
     public async updatePreview(document: vscode.TextDocument) {
         if (!this._currentPanel) {
             console.warn('[PreviewProvider] No panel available for update');
@@ -257,6 +564,9 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
             const xamlContent = document.getText();
             console.log('[PreviewProvider] Updating preview for:', document.fileName);
 
+            // Load design-time sample data from code-behind / ViewModel C# files
+            await this._loadDesignTimeData(document);
+
             const resourceData = await this._resourceManager.loadResourcesForFile(document.fileName);
             this._resources = resourceData.resources;
             this._styles = resourceData.styles;
@@ -265,8 +575,10 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
             this._parsedElements = this._parseXamlDocument(xamlContent);
 
             // NEW: Wrap non-Page roots in a Host Page for better preview context
-            if (this._parsedElements.length === 1) {
-                const root = this._parsedElements[0];
+            // Filter out XML processing instructions (e.g. ?xml) — they are not real content roots
+            const contentElements = this._parsedElements.filter(e => !e.type.startsWith('?'));
+            if (contentElements.length === 1) {
+                const root = contentElements[0];
                 const pageTypes = ['ContentPage', 'Shell', 'FlyoutPage', 'TabbedPage', 'NavigationPage', 'Application'];
 
                 if (!pageTypes.includes(root.type)) {
@@ -399,8 +711,19 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
 
         if (targetLine !== undefined && this._currentDocument) {
             // Find any visible editor for this document
-            const editor = vscode.window.visibleTextEditors.find(e => e.document.fileName === this._currentDocument?.fileName);
+            let editor = vscode.window.visibleTextEditors.find(e => e.document.fileName === this._currentDocument?.fileName);
             console.log(`[PreviewProvider] Found visible editor: ${editor ? 'Yes' : 'No'}`);
+
+            // Fallback: open document beside the preview preserving webview focus
+            if (!editor) {
+                try {
+                    const doc = await vscode.workspace.openTextDocument(this._currentDocument.fileName);
+                    editor = await vscode.window.showTextDocument(doc, { viewColumn: vscode.ViewColumn.One, preserveFocus: true });
+                    console.log(`[PreviewProvider] Opened document in ViewColumn.One`);
+                } catch (err) {
+                    console.warn('[PreviewProvider] Could not open document for highlight:', err);
+                }
+            }
 
             if (editor) {
                 const clampedLine = Math.max(0, Math.min(targetLine, editor.document.lineCount - 1));
@@ -601,14 +924,21 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
     }
 
     private _sendElementPropertiesToSidebar(elementId: string) {
-        if (!this._propertiesProvider) {
+        const element = this._findXamlElementById(elementId, this._xamlElements);
+        if (!element) {
             return;
         }
+        this._currentSelectedElementId = elementId;
 
-        const element = this._findXamlElementById(elementId, this._xamlElements);
-        if (element) {
-            this._currentSelectedElementId = elementId;
+        // Tree-based provider (may or may not be set)
+        if (this._propertiesProvider) {
             this._propertiesProvider.setSelectedElement(element);
+            try { this._propertiesProvider.refresh(); } catch { /* ignore */ }
+        }
+
+        // Webview-based sidebar panel (primary properties display)
+        if (this._propertiesWebviewProvider) {
+            this._propertiesWebviewProvider.setSelectedElement(element);
         }
     }
 
@@ -1132,12 +1462,35 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         const zoomScript = this._zoomManager.getWebviewZoomScript();
         const renderedContent = this._renderElements(this._parsedElements);
 
+        // ── v0.2.3: Detect active module from file path for dynamic app shell ──
+        const fp = (this._currentDocument?.uri?.fsPath ?? '').replace(/\\/g, '/');
+        const fileName = fp.split('/').pop()?.replace(/\.xaml$/i, '') ?? '';
+        let activeModule = 'Dashboard';
+        if (/\/Sales\/|\/Prodaja\//i.test(fp))                     { activeModule = 'Prodaja'; }
+        else if (/\/Purchases\/|\/Nabava\//i.test(fp))             { activeModule = 'Nabava'; }
+        else if (/\/CRM\//i.test(fp))                              { activeModule = 'CRM'; }
+        else if (/\/Finance\//i.test(fp))                          { activeModule = 'Finance'; }
+        else if (/\/Inventory\/|\/Warehouse\/|\/Skladi/i.test(fp)) { activeModule = 'Skladišče'; }
+        else if (/\/Manufacturing\/|\/Proizvodnja\//i.test(fp))    { activeModule = 'Proizvodnja'; }
+        else if (/\/Projects\/|\/Projekti\//i.test(fp))            { activeModule = 'Projekti'; }
+        else if (/\/Quality\/|\/Kakovost\//i.test(fp))             { activeModule = 'Kakovost'; }
+        else if (/\/Service\/|\/Servis\//i.test(fp))               { activeModule = 'Servis'; }
+        else if (/\/Products\/|\/Izdelki\//i.test(fp))             { activeModule = 'Izdelki'; }
+        else if (/\/HRM\/|\/Kadri\//i.test(fp))                    { activeModule = 'HRM'; }
+        // Human-readable tab label from file name
+        const tabLabel = fileName.replace(/([A-Z])/g, ' $1').trim() || activeModule;
+        // Helper: returns data-active attr string when module matches
+        const sa = (mod: string) => activeModule === mod ? ' data-active="true"' : '';
+        // shell-hidden when in selected mode
+        const shellHidden = this._viewMode === 'selected' ? 'shell-hidden' : '';
+
         return `<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>MAUI XAML Preview</title>
+<script src="https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/dist/html2canvas.min.js"></script>
 <style>
     :root {
         color-scheme: light dark;
@@ -1255,18 +1608,225 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         width: 100%;
         height: 100%;
         overflow: visible;
+        display: flex;
+        flex-direction: column;
+        flex: 1;
+        min-width: 0;
     }
 
     .xaml-root {
         width: 100%;
         height: 100%;
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
     }
+
+    /* ── App Shell (Celoten pogled) ── */
+    .app-shell {
+        display: flex;
+        width: 100%;
+        height: 100%;
+        flex: 1;
+        min-width: 0;
+        min-height: 0;
+    }
+
+    .app-shell-sidebar {
+        width: 60px;
+        min-width: 60px;
+        background: #123a2f;
+        display: flex;
+        flex-direction: column;
+        padding: 6px 4px;
+        gap: 1px;
+        overflow-y: auto;
+        overflow-x: hidden;
+        flex-shrink: 0;
+        scrollbar-width: none;
+    }
+    .app-shell-sidebar::-webkit-scrollbar { display: none; }
+
+    .app-shell-sidebar.shell-hidden {
+        display: none;
+    }
+
+    .sidebar-icon-btn {
+        width: 36px;
+        height: 34px;
+        background: transparent;
+        border: none;
+        border-radius: 6px;
+        color: #a0b3b0;
+        font-family: 'Segoe Fluent Icons', 'Segoe MDL2 Assets', sans-serif;
+        font-size: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        cursor: default;
+        margin: 0 auto;
+        flex-shrink: 0;
+        transition: background 0.15s;
+        position: relative;
+    }
+    .sidebar-icon-btn:hover {
+        background: #1a4d3e;
+        color: #e6f2ef;
+    }
+    .sidebar-icon-btn[data-active="true"] {
+        background: rgba(102,126,234,0.18);
+        color: #667eea;
+    }
+    .sidebar-icon-btn[title]:hover::after {
+        content: attr(title);
+        position: absolute;
+        left: calc(100% + 10px);
+        top: 50%;
+        transform: translateY(-50%);
+        background: #1a4d3e;
+        color: #e6f2ef;
+        padding: 3px 8px;
+        border-radius: 4px;
+        font-family: 'Segoe UI', sans-serif;
+        font-size: 12px;
+        white-space: nowrap;
+        pointer-events: none;
+        z-index: 9999;
+        border: 1px solid #2d5a4e;
+    }
+
+    .sidebar-sep {
+        height: 1px;
+        background: #2d5a4e;
+        margin: 3px 4px;
+        opacity: 0.5;
+        flex-shrink: 0;
+    }
+
+    .app-shell-content {
+        flex: 1;
+        width: 0;          /* prevent flex child from overflowing */
+        min-width: 0;
+        min-height: 0;
+        height: 100%;      /* concrete height so * rows resolve */
+        display: flex;
+        flex-direction: column;
+        overflow: hidden;
+    }
+
+    /* ── v0.2.3: Top toolbar ── */
+    .app-shell-topbar {
+        display: flex;
+        align-items: center;
+        background: #141922;
+        border-bottom: 1px solid #2d5a4e;
+        padding: 0 6px;
+        height: 30px;
+        min-height: 30px;
+        flex-shrink: 0;
+        overflow: hidden;
+        gap: 2px;
+    }
+    .app-shell-topbar.shell-hidden { display: none; }
+
+    .tb-btn {
+        height: 22px;
+        min-width: 22px;
+        padding: 0 6px;
+        background: #123a2f;
+        border: none;
+        border-radius: 4px;
+        color: #a0b3b0;
+        font-size: 11px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        cursor: default;
+        flex-shrink: 0;
+        white-space: nowrap;
+    }
+    .tb-btn:hover { background: #1a4d3e; color: #e6f2ef; }
+
+    .tb-sep {
+        width: 1px;
+        height: 16px;
+        background: #2d5a4e;
+        margin: 0 3px;
+        flex-shrink: 0;
+    }
+
+    .tb-search {
+        height: 20px;
+        background: #0b2b22;
+        border: 1px solid #2d5a4e;
+        border-radius: 4px;
+        color: #e6f2ef;
+        font-size: 10px;
+        padding: 0 6px;
+        width: 110px;
+        outline: none;
+        flex-shrink: 0;
+    }
+
+    .tb-zoom-label {
+        color: #a0b3b0;
+        font-size: 10px;
+        padding: 0 3px;
+        min-width: 34px;
+        text-align: center;
+        flex-shrink: 0;
+    }
+
+    .tb-spacer { flex: 1; }
+
+    /* ── v0.2.3: Tab strip ── */
+    .app-shell-tabstrip {
+        display: flex;
+        align-items: stretch;
+        background: #0b2b22;
+        border-bottom: 1px solid #2d5a4e;
+        height: 30px;
+        min-height: 30px;
+        flex-shrink: 0;
+        padding: 0 4px;
+        gap: 2px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+    }
+    .app-shell-tabstrip.shell-hidden { display: none; }
+    .app-shell-tabstrip::-webkit-scrollbar { display: none; }
+
+    .tab-item {
+        display: inline-flex;
+        align-items: center;
+        padding: 0 10px;
+        font-size: 11px;
+        color: #a0b3b0;
+        border-bottom: 2px solid transparent;
+        cursor: default;
+        white-space: nowrap;
+        gap: 6px;
+        flex-shrink: 0;
+        font-family: 'Segoe UI', sans-serif;
+    }
+    .tab-item.tab-active {
+        color: #e6f2ef;
+        border-bottom-color: #667eea;
+    }
+    .tab-close { opacity: 0.4; font-size: 10px; }
 
     .maui-element {
         box-sizing: border-box;
         position: relative;
         transition: box-shadow 0.15s ease, transform 0.15s ease;
         cursor: pointer;
+        min-width: 0;
+        flex-shrink: 0;
+        width: 100%;
     }
 
     .maui-element:hover {
@@ -1281,6 +1841,13 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         box-shadow: 0 0 0 2px rgba(37,99,235,0.35), 0 8px 18px rgba(37,99,235,0.15);
     }
 
+    .maui-element.selected {
+        box-shadow: 0 0 0 3px #512BD4, 0 4px 12px rgba(81,43,212,0.3) !important;
+        outline: 2px solid #512BD4;
+        z-index: 100;
+        position: relative;
+    }
+
     .maui-element.ancestor-element {
         outline: 1px dashed rgba(37,99,235,0.35);
     }
@@ -1291,6 +1858,24 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
 
     .maui-stacklayout.is-horizontal {
         /* Handled by inline styles */
+    }
+
+    /* Children of HorizontalStackLayout should NOT stretch to 100% width */
+    .maui-horizontalstacklayout > .maui-element {
+        width: auto !important;
+        flex-shrink: 0;
+    }
+
+    /* ContentPage and ContentView fill the full area */
+    .maui-contentpage,
+    .maui-contentview {
+        width: 100%;
+        flex: 1;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: stretch;
+        overflow: hidden;
     }
 
     .maui-grid {
@@ -1400,13 +1985,21 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
     }
 
     .maui-scrollview {
+        width: 100%;
         max-height: 100%;
         overflow: auto;
+        flex-shrink: 1;
     }
 
     .binding-placeholder {
         font-style: italic;
         color: #64748b;
+    }
+
+    .binding-value {
+        /* design-time sample value — looks like real content */
+        color: inherit;
+        opacity: 0.85;
     }
 
     .structure-outline {
@@ -1434,6 +2027,9 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
              <button id="btnViewPopup" class="view-btn" title="Prikaži samo popup okna">Popup</button>
         </div>
         ${platformSelector}
+        <div class="screenshot-controls" style="margin-left: auto;">
+            <button id="btnScreenshot" class="zoom-btn" title="Naredi screenshot">📸</button>
+        </div>
     </div>
     <div class="preview-viewport">
         <div class="device-wrapper">
@@ -1442,8 +2038,62 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                     ${statusBarContent ? `<div class="status-bar">${statusBarContent}</div>` : ''}
                     ${navigationBarContent ? `<div class="navigation-bar">${navigationBarContent}</div>` : ''}
                     <div class="content-area">
-                        <div class="xaml-root">
-                            ${renderedContent}
+                        <div class="app-shell">
+                            <div class="app-shell-sidebar ${shellHidden}" id="appShellSidebar">
+                                <!-- Hamburger -->
+                                <div class="sidebar-icon-btn" title="">&#xE700;</div>
+                                <div class="sidebar-sep"></div>
+                                <!-- Group 1: CRM & Sales -->
+                                <div class="sidebar-icon-btn" title="Dashboard"${sa('Dashboard')}>&#xE80F;</div>
+                                <div class="sidebar-icon-btn" title="CRM"${sa('CRM')}>&#xE77B;</div>
+                                <div class="sidebar-icon-btn" title="Prodaja"${sa('Prodaja')}>&#xE7BF;</div>
+                                <div class="sidebar-icon-btn" title="Servis"${sa('Servis')}>&#xE90F;</div>
+                                <div class="sidebar-sep"></div>
+                                <!-- Group 2: Finance & Supply -->
+                                <div class="sidebar-icon-btn" title="Finance"${sa('Finance')}>&#xE8C7;</div>
+                                <div class="sidebar-icon-btn" title="Nabava"${sa('Nabava')}>&#xE7AC;</div>
+                                <div class="sidebar-icon-btn" title="Skladi&#x161;&#x10D;e"${sa('Skladišče')}>&#xE7B8;</div>
+                                <div class="sidebar-sep"></div>
+                                <!-- Group 3: Manufacturing -->
+                                <div class="sidebar-icon-btn" title="Izdelki"${sa('Izdelki')}>&#xECAD;</div>
+                                <div class="sidebar-icon-btn" title="Proizvodnja"${sa('Proizvodnja')}>&#xE99A;</div>
+                                <div class="sidebar-icon-btn" title="Projekti"${sa('Projekti')}>&#xE8FD;</div>
+                                <div class="sidebar-icon-btn" title="Kakovost"${sa('Kakovost')}>&#xE73E;</div>
+                            </div>
+                            <div class="app-shell-content">
+                                <!-- v0.2.3: Synthetic top toolbar -->
+                                <div class="app-shell-topbar ${shellHidden}" id="appShellTopbar">
+                                    <span class="tb-btn" title="Novo">&#xFF0B;</span>
+                                    <span class="tb-btn" title="Uredi">&#x270F;</span>
+                                    <span class="tb-btn" title="Izbri&#x161;i">&#xE74D;</span>
+                                    <span class="tb-btn" title="Shrani">&#xE74E;</span>
+                                    <span class="tb-sep"></span>
+                                    <span class="tb-btn" title="Osvezi">&#xE72C;</span>
+                                    <span class="tb-btn" title="Filter">&#xE71C;</span>
+                                    <span class="tb-btn" title="Razvrsti">&#xE8CB;</span>
+                                    <span class="tb-sep"></span>
+                                    <span class="tb-btn" title="Natisni">&#xE749;</span>
+                                    <span class="tb-btn" title="Excel">&#xE9F9;</span>
+                                    <span class="tb-btn" title="PDF">&#xEA90;</span>
+                                    <span class="tb-sep"></span>
+                                    <span class="tb-btn" title="I&#x161;&#x10D;i">&#xE721;</span>
+                                    <input class="tb-search" type="text" placeholder="I&#x161;&#x10D;i&#x2026;" readonly />
+                                    <span class="tb-spacer"></span>
+                                    <span class="tb-btn" title="Pomanj&#x161;aj">&#x2212;</span>
+                                    <span class="tb-zoom-label">1.00&#xD7;</span>
+                                    <span class="tb-btn" title="Pove&#x10D;aj">&#xFF0B;</span>
+                                    <span class="tb-sep"></span>
+                                    <span class="tb-btn" title="Obvestila">&#xE7E7;</span>
+                                    <span class="tb-btn" title="Nastavitve">&#xE713;</span>
+                                </div>
+                                <!-- v0.2.3: Synthetic tab strip -->
+                                <div class="app-shell-tabstrip ${shellHidden}" id="appShellTabstrip">
+                                    <div class="tab-item tab-active"><span>${tabLabel}</span><span class="tab-close">&#xD7;</span></div>
+                                </div>
+                                <div class="xaml-root">
+                                    ${renderedContent}
+                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -1674,6 +2324,21 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         currentViewMode = mode || currentViewMode || 'full';
         setViewModeButtons(currentViewMode);
 
+        // Toggle app-shell sidebar based on view mode
+        const sidebar = document.getElementById('appShellSidebar');
+        if (sidebar) {
+            if (currentViewMode === 'selected') {
+                sidebar.classList.add('shell-hidden');
+            } else {
+                sidebar.classList.remove('shell-hidden');
+            }
+        }
+        // v0.2.3: toggle topbar + tabstrip
+        const topbar = document.getElementById('appShellTopbar');
+        const tabstrip = document.getElementById('appShellTabstrip');
+        if (topbar)   { topbar.classList.toggle('shell-hidden',   currentViewMode === 'selected'); }
+        if (tabstrip) { tabstrip.classList.toggle('shell-hidden', currentViewMode === 'selected'); }
+
         const root = document.querySelector('.xaml-root');
         if (!root) {
             return;
@@ -1883,6 +2548,52 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         }
     });
 
+    // Screenshot functionality
+    const btnScreenshot = document.getElementById('btnScreenshot');
+    if (btnScreenshot) {
+        btnScreenshot.addEventListener('click', async () => {
+            try {
+                btnScreenshot.textContent = '⏳';
+                btnScreenshot.disabled = true;
+                
+                const deviceFrame = document.getElementById('deviceFrame');
+                if (!deviceFrame) {
+                    vscode.postMessage({ type: 'showError', message: 'Device frame not found' });
+                    return;
+                }
+                
+                const canvas = await html2canvas(deviceFrame, {
+                    backgroundColor: null,
+                    scale: 2,
+                    useCORS: true,
+                    allowTaint: true,
+                    logging: false
+                });
+                
+                const dataUrl = canvas.toDataURL('image/png');
+                vscode.postMessage({ 
+                    type: 'requestScreenshot', 
+                    dataUrl: dataUrl,
+                    timestamp: new Date().toISOString()
+                });
+                
+                btnScreenshot.textContent = '✓';
+                setTimeout(() => {
+                    btnScreenshot.textContent = '📸';
+                    btnScreenshot.disabled = false;
+                }, 1500);
+            } catch (err) {
+                console.error('Screenshot failed:', err);
+                vscode.postMessage({ type: 'showError', message: 'Screenshot failed: ' + err.message });
+                btnScreenshot.textContent = '⚠';
+                setTimeout(() => {
+                    btnScreenshot.textContent = '📸';
+                    btnScreenshot.disabled = false;
+                }, 2000);
+            }
+        });
+    }
+
     vscode.postMessage({ command: 'ready' });
 </script>
 </body>
@@ -1935,7 +2646,9 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         const dataId = `data-element-id="${element.id}"`;
         const dataLine = `data-line="${element.metadata.startLine !== undefined ? element.metadata.startLine : ''}"`;
         const dataBinding = bindingName ? `data-binding-name="${bindingName}"` : '';
-        const styleAttr = `style="${this._buildInlineStyle(element)}"`;
+        // NOTE: styleAttr is computed AFTER the switch so layout-specific properties are included
+        // Each case that uses styles will call _buildInlineStyle inline
+        let styleAttr = '';
         // Fix 4: Use ToolTipProperties.Text for tooltip if available
         const tooltipText = element.resolvedAttributes['ToolTipProperties.Text'];
         const titleContent = tooltipText && !tooltipText.includes('{Binding')
@@ -1968,8 +2681,10 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                         ${childrenHtml}
                     </div>
                 </div>`;
-            case 'Label':
-                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding}${styleAttr}${titleAttr} ${onClick}>${text}</div>`;
+            case 'Label': {
+                const labelStyle = this._buildInlineStyle(element);
+                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding} style="${labelStyle}"${titleAttr} ${onClick}>${text}</div>`;
+            }
             case 'Button': {
                 const buttonStyle = this._buildInlineStyle(element);
                 return `<button class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding} style="${buttonStyle}" ${titleAttr} ${onClick}>
@@ -1988,7 +2703,13 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                 if (textValue && textValue.includes('{Binding')) {
                     const bindingMatch = textValue.match(/\{Binding\s+([^}]+)\}/i);
                     if (bindingMatch) {
-                        displayPlaceholder = `[${bindingMatch[1]}]`;
+                        const propName = bindingMatch[1].split(',')[0].trim().replace(/^Path\s*=\s*/i, '');
+                        const designValue = this._resolveBindingValue(propName);
+                        if (designValue !== undefined && designValue !== '') {
+                            displayValue = designValue;
+                        } else {
+                            displayPlaceholder = displayPlaceholder || `[${propName}]`;
+                        }
                     }
                 } else {
                     displayValue = textValue || '';
@@ -2001,38 +2722,71 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
 
                 return `<input type="${inputType}" class="${classes.join(' ')}" ${dataId}${dataLine}${dataBinding} style="${this._buildInlineStyle(element)}" ${titleAttr} value="${this._escapeHtml(displayValue)}" placeholder="${this._escapeHtml(displayPlaceholder)}" ${onClick} />`;
             }
-            case 'Editor':
-                return `<textarea class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>${this._escapeHtml(text || '')}</textarea>`;
-            case 'ScrollView':
-                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}><div class="scroll-content">${childrenHtml}</div></div>`;
+            case 'Editor': {
+                const editorStyle = this._buildInlineStyle(element);
+                return `<textarea class="${classes.join(' ')}" ${dataId}${dataLine} style="${editorStyle}"${titleAttr}>${this._escapeHtml(text || '')}</textarea>`;
+            }
+            case 'ScrollView': {
+                const scrollStyle = this._buildInlineStyle(element);
+                return `<div class="${classes.join(' ')}" ${dataId}${dataLine} style="${scrollStyle}"${titleAttr}><div class="scroll-content">${childrenHtml}</div></div>`;
+            }
             case 'Image': {
+                const imgStyle = this._buildInlineStyle(element);
                 const source = element.resolvedAttributes['Source'];
                 if (source && !source.includes('{Binding')) {
                     const webviewUri = this._getImageWebviewUri(source);
                     if (webviewUri) {
-                        return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>
+                        return `<div class="${classes.join(' ')}" ${dataId}${dataLine} style="${imgStyle}"${titleAttr}>
                             <img src="${webviewUri}" alt="${text || 'Image'}" style="width: 100%; height: 100%; object-fit: contain;" onerror="this.style.display='none'; this.parentElement.innerHTML='<span class=\\'binding-placeholder\\'>Image not found</span>'" />
                         </div>`;
                     } else {
-                        return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}><span class="binding-placeholder">${source}</span></div>`;
+                        return `<div class="${classes.join(' ')}" ${dataId}${dataLine} style="${imgStyle}"${titleAttr}><span class="binding-placeholder">${source}</span></div>`;
                     }
                 } else {
-                    return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}><span class="binding-placeholder">${text || source || 'Image'}</span></div>`;
+                    return `<div class="${classes.join(' ')}" ${dataId}${dataLine} style="${imgStyle}"${titleAttr}><span class="binding-placeholder">${text || source || 'Image'}</span></div>`;
                 }
             }
-            case 'ActivityIndicator':
+            case 'ActivityIndicator': {
                 const isRunning = element.resolvedAttributes['IsRunning'] === 'True';
                 const indicatorColor = this._resolveColor(element.resolvedAttributes['Color']) || '#007acc';
-                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>
+                const actStyle = this._buildInlineStyle(element);
+                return `<div class="${classes.join(' ')}" ${dataId}${dataLine} style="${actStyle}"${titleAttr}>
                     ${isRunning ? `<div class="activity-spinner" style="border-top-color: ${indicatorColor}"></div>` : ''}
                 </div>`;
+            }
             case 'Picker': {
                 const pickerTitle = element.resolvedAttributes['Title'] || 'Select...';
-                return `<div class="maui-picker-wrapper" ${styleAttr}>
+                const pickerStyle = this._buildInlineStyle(element);
+
+                // Resolve items from x:Static or {Binding} on ItemsSource
+                let pickerItems: string[] = [];
+                const itemsSource = element.resolvedAttributes['ItemsSource'];
+                if (itemsSource) {
+                    // {x:Static vm:ClassName.StaticProp}
+                    const xStaticMatch = itemsSource.match(/x:Static\s+(?:\w+:)?\w+\.(\w+)/i);
+                    if (xStaticMatch) {
+                        const itemsJson = this._designTimeData.get(`${xStaticMatch[1]}__items`);
+                        if (itemsJson) { try { pickerItems = JSON.parse(itemsJson); } catch (_) {} }
+                    }
+                    // {Binding SomeProp}
+                    if (pickerItems.length === 0 && itemsSource.includes('{Binding')) {
+                        const bm = itemsSource.match(/Binding\s+([^,}]+)/i);
+                        if (bm) {
+                            const propName = bm[1].trim().replace(/^Path\s*=\s*/i, '');
+                            const itemsJson = this._designTimeData.get(`${propName}__items`);
+                            if (itemsJson) { try { pickerItems = JSON.parse(itemsJson); } catch (_) {} }
+                        }
+                    }
+                }
+
+                const optionsHtml = pickerItems.length > 0
+                    ? pickerItems.map(item => `<option>${this._escapeHtml(item)}</option>`).join('')
+                    : `<option>Item 1</option><option>Item 2</option>`;
+
+                return `<div class="maui-picker-wrapper" style="${pickerStyle}">
                             <select class="${classes.join(' ')}" ${dataId}${dataLine}${titleAttr} ${onClick}>
                                 <option disabled selected>${this._escapeHtml(pickerTitle)}</option>
-                                <option>Item 1</option>
-                                <option>Item 2</option>
+                                ${optionsHtml}
                             </select>
                         </div>`;
             }
@@ -2057,8 +2811,10 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                     <span class="binding-placeholder" style="font-size: 10px; opacity: 0.6;">CollectionView [data-bound]</span>
                 </div>`;
             }
-            default:
-                return `<div class="${classes.join(' ')}" ${dataId}${dataLine}${styleAttr}${titleAttr}>${text}${childrenHtml}</div>`;
+            default: {
+                const defaultStyle = this._buildInlineStyle(element);
+                return `<div class="${classes.join(' ')}" ${dataId}${dataLine} style="${defaultStyle}"${titleAttr}>${text}${childrenHtml}</div>`;
+            }
         }
     }
 
@@ -2071,13 +2827,24 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         const bindingMatch = textValue.match(/\{Binding\s+([^}]+)\}/i);
         if (bindingMatch) {
             const bindingContent = bindingMatch[1].trim();
-            // Fix 3: Extract StringFormat and show formatted placeholder
+
+            // Extract property path
+            const bindingPath = bindingContent.split(',')[0].trim().replace(/^Path\s*=\s*/i, '');
+
+            // Extract optional StringFormat
             const stringFormatMatch = bindingContent.match(/StringFormat\s*=\s*'([^']+)'/i)
                 || bindingContent.match(/StringFormat\s*=\s*([^,}]+)/i);
-            if (stringFormatMatch) {
-                // Extract just the format pattern and create a sample value
-                const formatStr = stringFormatMatch[1].trim();
-                // Replace {0:...} or {0} placeholders with sample values
+            const formatStr = stringFormatMatch?.[1]?.trim();
+
+            // Try design-time value (ViewModel data + heuristics)
+            const resolved = this._resolveBindingValue(bindingPath, formatStr);
+            if (resolved !== undefined) {
+                if (resolved === '') { return ''; }
+                return `<span class="binding-value">${this._escapeHtml(resolved)}</span>`;
+            }
+
+            // Fallback: show formatted placeholder (legacy behaviour)
+            if (formatStr) {
                 let displayText = formatStr
                     .replace(/\{0:F(\d+)\}/i, (_, digits) => (1.0).toFixed(Number(digits)))
                     .replace(/\{0:N(\d+)\}/i, (_, digits) => (1000).toFixed(Number(digits)))
@@ -2087,10 +2854,6 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                     .replace(/\{0:[^}]+\}/g, '...');
                 return `<span class="binding-placeholder">${this._escapeHtml(displayText)}</span>`;
             }
-
-            // Extract just the binding path (before any comma-separated parameters)
-            const bindingPath = bindingContent.split(',')[0].trim()
-                .replace(/^Path\s*=\s*/i, '');
             return `<span class="binding-placeholder">${this._escapeHtml(bindingPath)}</span>`;
         }
 
@@ -2214,12 +2977,22 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
             }
         }
 
+        // Synthetic ContentPage host: fill .xaml-root so device height propagates into the layout chain
+        if (element.metadata.isSynthetic && element.type === 'ContentPage') {
+            style.set('width', '100%');
+            style.set('height', '100%');
+            style.set('display', 'flex');
+            style.set('flex-direction', 'column');
+        }
+
         switch (element.type) {
             case 'StackLayout':
             case 'VerticalStackLayout': {
                 style.set('display', 'flex');
-                const orientation = (attrs['Orientation'] || '').toLowerCase();
-                style.set('flex-direction', orientation === 'horizontal' ? 'row' : 'column');
+                style.set('flex-direction', 'column');
+                style.set('width', '100%'); // CRITICAL: Must use width, not flex
+                style.set('box-sizing', 'border-box');
+                style.set('align-items', 'stretch'); // Children stretch to full width
                 const spacing = attrs['Spacing'] || '0';
                 if (spacing && spacing !== '0') {
                     style.set('gap', this._toPixels(spacing));
@@ -2229,6 +3002,8 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
             case 'HorizontalStackLayout': {
                 style.set('display', 'flex');
                 style.set('flex-direction', 'row');
+                style.set('width', '100%'); // CRITICAL: Must use width, not flex
+                style.set('box-sizing', 'border-box');
                 const spacing = attrs['Spacing'] || '0';
                 if (spacing && spacing !== '0') {
                     style.set('gap', this._toPixels(spacing));
@@ -2237,6 +3012,21 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
             }
             case 'Grid': {
                 style.set('display', 'grid');
+                style.set('width', '100%'); // CRITICAL: Must use width, not flex
+                style.set('box-sizing', 'border-box');
+                style.set('align-items', 'stretch');
+                style.set('min-height', '0');
+
+                // Synthetic host Grid: single full-height cell so the wrapped ContentView fills the device screen
+                if (element.metadata.isSynthetic) {
+                    style.set('grid-template-columns', '1fr');
+                    style.set('grid-template-rows', '1fr');
+                    style.set('flex', '1');
+                    if (!style.has('height')) {
+                        style.set('height', '100%');
+                    }
+                    break;
+                }
 
                 // Get defined columns and rows
                 let columns = element.metadata.gridColumns && element.metadata.gridColumns.length
@@ -2251,6 +3041,9 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                 let maxCol = (element.metadata.gridColumns?.length || 1) - 1;
 
                 const checkChildren = (children: ParsedElement[]) => {
+                    // Only check DIRECT children — Grid.Row/Grid.Column attached properties
+                    // are scoped to the immediate parent Grid. Recursing into grandchildren
+                    // would incorrectly inherit column/row indices from nested Grids.
                     for (const child of children) {
                         const rowAttr = child.resolvedAttributes['Grid.Row'];
                         const colAttr = child.resolvedAttributes['Grid.Column'];
@@ -2265,9 +3058,6 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                             if (!Number.isNaN(colNum)) {
                                 maxCol = Math.max(maxCol, colNum);
                             }
-                        }
-                        if (child.children.length > 0) {
-                            checkChildren(child.children);
                         }
                     }
                 };
@@ -2291,6 +3081,17 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
 
                 style.set('grid-template-columns', columns);
                 style.set('grid-template-rows', rows);
+                // If any row uses fr/*, grid needs a defined height to fill parent
+                const hasFrRow = (element.metadata.gridRows || []).some(r => r.trim() === '*' || r.trim().endsWith('*'));
+                if (hasFrRow) {
+                    style.set('flex', '1');
+                    style.set('min-height', '0');
+                    style.set('align-self', 'stretch');
+                    // height: 100% ensures 1fr rows can expand (fr units require a concrete container height)
+                    if (!style.has('height')) {
+                        style.set('height', '100%');
+                    }
+                }
 
                 const colSpacing = attrs['ColumnSpacing'] || '0';
                 const rowSpacing = attrs['RowSpacing'] || '0';
@@ -2333,6 +3134,13 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                 style.set('align-items', 'center');
                 style.set('justify-content', 'center');
                 style.set('cursor', 'pointer');
+                // Buttons shrink to content unless explicit WidthRequest or HorizontalOptions=Fill
+                if (!style.has('width') || style.get('width') === '100%') {
+                    if (!attrs['WidthRequest'] && attrs['HorizontalOptions']?.toLowerCase() !== 'fill' && attrs['HorizontalOptions']?.toLowerCase() !== 'fillandexpand') {
+                        style.set('width', 'fit-content');
+                        style.set('align-self', 'flex-start');
+                    }
+                }
                 if (!style.has('padding')) {
                     style.set('padding', '10px 20px');
                 }
@@ -2353,11 +3161,26 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                 break;
             }
             case 'ScrollView': {
-                style.set('overflow', 'auto');
+                const scrollOrientation = (attrs['Orientation'] || 'vertical').toLowerCase();
+                if (scrollOrientation === 'horizontal') {
+                    style.set('overflow-x', 'auto');
+                    style.set('overflow-y', 'hidden');
+                    style.set('width', '100%');
+                } else {
+                    style.set('overflow-x', 'hidden');
+                    style.set('overflow-y', 'auto');
+                    style.set('width', '100%');
+                    style.set('flex', '1');
+                    style.set('min-height', '0');
+                }
                 break;
             }
             case 'Label': {
                 style.set('display', 'block');
+                // Labels shrink to content unless HorizontalOptions=Fill or inside Grid
+                if (!attrs['WidthRequest'] && attrs['HorizontalOptions']?.toLowerCase() === 'center') {
+                    style.set('width', 'fit-content');
+                }
                 break;
             }
             case 'Entry': {
@@ -2557,11 +3380,16 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
         const normalized = option.toLowerCase();
         if (axis === 'horizontal') {
             if (normalized === 'center') {
+                style.set('width', 'fit-content');
                 style.set('margin-left', 'auto');
                 style.set('margin-right', 'auto');
             } else if (normalized === 'end') {
+                style.set('width', 'fit-content');
                 style.set('margin-left', 'auto');
+                style.set('margin-right', '0');
             } else if (normalized === 'start') {
+                style.set('width', 'fit-content');
+                style.set('margin-left', '0');
                 style.set('margin-right', 'auto');
             } else if (normalized === 'fill' || normalized === 'fillandexpand') {
                 style.set('width', '100%');
@@ -2575,6 +3403,8 @@ export class MauiXamlPreviewProvider implements vscode.WebviewPanelSerializer {
                 style.set('align-self', 'flex-start');
             } else if (normalized === 'fill' || normalized === 'fillandexpand') {
                 style.set('align-self', 'stretch');
+                style.set('flex', '1');
+                style.set('min-height', '0');
             }
         }
     }

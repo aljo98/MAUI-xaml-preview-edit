@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "8U4WYgA2Dy8=",
+  "dgSpecHash": "szRBW1mZpE8=",
   "success": true,
-  "projectFilePath": "H:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj",
+  "projectFilePath": "F:\\AF\\db_procesing_postregDB\\archive\\legacy_tools\\tools\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\fajdi\\.nuget\\packages\\envdte\\17.0.31902.203\\envdte.17.0.31902.203.nupkg.sha512",
     "C:\\Users\\fajdi\\.nuget\\packages\\envdte100\\17.0.31902.203\\envdte100.17.0.31902.203.nupkg.sha512",

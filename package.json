@@ -1,9 +1,9 @@
 {
   "name": "maui-xaml-preview",
   "displayName": "MAUI XAML Preview",
-  "description": "Prikaže predogled .NET MAUI XAML dokumentov in omogoča urejanje lastnosti.",
+  "description": "Prikaže predogled .NET MAUI XAML dokumentov in omogoča urejanje lastnosti ter testiranje na emulatorju.",
   "publisher": "aljo98",
-  "version": "0.1.0",
+  "version": "0.2.3",
   "icon": "media/icon.png",
   "license": "MIT",
   "repository": {
@@ -18,7 +18,10 @@
   ],
   "main": "./out/extension.js",
   "activationEvents": [
-    "onLanguage:xaml"
+    "onCommand:mauiXamlPreview.openPreview",
+    "onCommand:mauiXamlPreview.addEntity",
+    "onLanguage:xaml",
+    "workspaceContains:**/*.csproj"
   ],
   "contributes": {
     "languages": [
@@ -64,6 +67,90 @@
         "title": "Scaffold dokumentno predlogo…",
         "category": ".NET MAUI",
         "icon": "$(file-code)"
+      },
+      {
+        "command": "mauiEmulator.listDevices",
+        "title": "📱 Seznam emulatorjev",
+        "category": ".NET MAUI Emulator",
+        "icon": "$(device-mobile)"
+      },
+      {
+        "command": "mauiEmulator.start",
+        "title": "▶️ Zaženi emulator",
+        "category": ".NET MAUI Emulator",
+        "icon": "$(play)"
+      },
+      {
+        "command": "mauiEmulator.connectMetro",
+        "title": "🔗 Poveži na Metro (Hot Reload)",
+        "category": ".NET MAUI Emulator",
+        "icon": "$(link)"
+      },
+      {
+        "command": "mauiEmulator.checkMetro",
+        "title": "✅ Preveri Metro status",
+        "category": ".NET MAUI Emulator",
+        "icon": "$(check)"
+      },
+      {
+        "command": "mauiEmulator.restartAdb",
+        "title": "🔄 Restart ADB",
+        "category": ".NET MAUI Emulator",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "mauiEmulator.deviceInfo",
+        "title": "ℹ️ Info o napravi",
+        "category": ".NET MAUI Emulator",
+        "icon": "$(info)"
+      },
+      {
+        "command": "mauiScreenshot.deviceCapture",
+        "title": "📱 Screenshot emulatorja",
+        "category": ".NET MAUI Screenshot",
+        "icon": "$(device-mobile)"
+      },
+      {
+        "command": "mauiScreenshot.previewCapture",
+        "title": "🖼️ Screenshot preview-ja",
+        "category": ".NET MAUI Screenshot",
+        "icon": "$(preview)"
+      },
+      {
+        "command": "mauiScreenshot.showHtml",
+        "title": "📄 Prikaži generirani HTML",
+        "category": ".NET MAUI Screenshot",
+        "icon": "$(code)"
+      },
+      {
+        "command": "mauiScreenshot.compare",
+        "title": "🔍 Primerjaj preview z realno app",
+        "category": ".NET MAUI Screenshot",
+        "icon": "$(diff)"
+      },
+      {
+        "command": "mauiScreenshot.analyzeDifferences",
+        "title": "📊 Analiziraj razlike",
+        "category": ".NET MAUI Screenshot",
+        "icon": "$(graph)"
+      },
+      {
+        "command": "mauiScreenshot.openFolder",
+        "title": "📂 Odpri screenshots mapo",
+        "category": ".NET MAUI Screenshot",
+        "icon": "$(folder)"
+      },
+      {
+        "command": "mauiScreenshot.list",
+        "title": "📋 Seznam screenshotov",
+        "category": ".NET MAUI Screenshot",
+        "icon": "$(list-tree)"
+      },
+      {
+        "command": "mauiXamlPreview.copyAiContext",
+        "title": "Copy AI Design Context",
+        "category": ".NET MAUI",
+        "icon": "$(clippy)"
       }
     ],
     "viewsContainers": {
@@ -79,7 +166,8 @@
       "maui-designer": [
         {
           "id": "mauiProperties",
-          "name": "Lastnosti"
+          "name": "Lastnosti",
+          "type": "webview"
         },
         {
           "id": "mauiTemplates",
@@ -88,10 +176,32 @@
         {
           "id": "mauiStructure",
           "name": "Struktura"
+        },
+        {
+          "id": "mauiCodeBehind",
+          "name": "Code-Behind Inspector"
         }
       ]
     },
     "menus": {
+      "commandPalette": [
+        {
+          "command": "mauiEmulator.listDevices",
+          "when": "editorLangId == xaml"
+        },
+        {
+          "command": "mauiEmulator.start",
+          "when": "editorLangId == xaml"
+        },
+        {
+          "command": "mauiEmulator.connectMetro",
+          "when": "editorLangId == xaml"
+        },
+        {
+          "command": "mauiEmulator.checkMetro",
+          "when": "editorLangId == xaml"
+        }
+      ],
       "editor/title": [
         {
           "command": "mauiXamlPreview.openPreview",
@@ -110,11 +220,56 @@
       ]
     }
   },
+  "configuration": {
+    "title": "MAUI XAML Preview",
+    "properties": {
+      "mauiXamlPreview.autoOpen": {
+        "type": "boolean",
+        "default": false,
+        "description": "Avtomatsko odpri MAUI XAML Preview ko odprete .xaml datoteko."
+      },
+      "mauiXamlPreview.mcpEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Zaženi MCP (Model Context Protocol) server ob aktivaciji. Omogoča AI agentom interakcijo s preview-jem."
+      },
+      "mauiXamlPreview.mcpPort": {
+        "type": "number",
+        "default": 3100,
+        "description": "Port za MCP SSE server (privzeto 3100)."
+      },
+      "mauiXamlPreview.mcpTestingEnabled": {
+        "type": "boolean",
+        "default": true,
+        "description": "Omogoči MCP Testing server za testiranje in analizo MAUI aplikacij."
+      },
+      "mauiXamlPreview.embeddedPort": {
+        "type": "number",
+        "default": 9000,
+        "description": "Port za embedded test agent v MAUI aplikaciji (privzeto 9000)."
+      },
+      "mauiXamlPreview.appiumServerUrl": {
+        "type": "string",
+        "default": "http://localhost:4723",
+        "description": "URL Appium serverja za UI automation."
+      },
+      "mauiXamlPreview.screenshotsDir": {
+        "type": "string",
+        "default": ".maui-screenshots",
+        "description": "Mapa za shranjevanje screenshotov."
+      },
+      "mauiXamlPreview.baselinesDir": {
+        "type": "string",
+        "default": ".maui-baselines",
+        "description": "Mapa za baseline screenshot-e za primerjavo."
+      }
+    }
+  },
   "scripts": {
     "compile": "tsc -p ./",
     "watch": "tsc -w -p ./",
     "lint": "echo 'No lint configured'",
-    "package": "vsce package"
+    "package": "npm install && vsce package"
   },
   "devDependencies": {
     "@types/node": "20.19.17",
@@ -122,6 +277,7 @@
     "typescript": "5.9.2"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
     "fast-xml-parser": "4.5.3"
   }
 }

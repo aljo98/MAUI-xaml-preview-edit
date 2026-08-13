@@ -140,26 +140,31 @@ export class PlatformManager {
     const isDesktop = config.name === 'Windows' || config.name === 'macOS';
 
     return `
+            .device-wrapper {
+                ${isDesktop ? 'width: 100%; height: 100%; display: flex; flex-direction: column;' : ''}
+            }
+
             .device-frame {
                 width: ${isDesktop ? '100%' : config.width + 'px'};
                 height: ${isDesktop ? '100%' : config.height + 'px'};
-                min-width: 320px;
-                min-height: 400px;
+                min-width: ${isDesktop ? '400px' : '320px'};
+                min-height: ${isDesktop ? '300px' : '400px'};
                 max-width: 100%;
-                max-height: 100%;
+                max-height: ${isDesktop ? '100%' : 'none'};
                 border-radius: ${config.borderRadius}px;
-                background-color: ${isDesktop ? 'transparent' : config.frameColor};
-                box-shadow: ${isDesktop ? 'none' : '0 20px 60px rgba(0, 0, 0, 0.4)'};
+                background-color: ${isDesktop ? config.backgroundColor : config.frameColor};
+                box-shadow: ${isDesktop ? '0 0 0 1px #3e3e42' : '0 20px 60px rgba(0, 0, 0, 0.4)'};
                 position: relative;
-                overflow: ${isDesktop ? 'visible' : 'hidden'};
+                overflow: hidden;
                 margin: ${isDesktop ? '0' : '20px auto'};
                 resize: ${isDesktop ? 'both' : 'none'};
-                border: ${isDesktop ? 'none' : '4px solid ' + config.frameColor};
+                border: ${isDesktop ? '1px solid #3e3e42' : '4px solid ' + config.frameColor};
+                ${isDesktop ? 'display: flex; flex-direction: column;' : ''}
             }
 
             .device-screen {
                 width: 100%;
-                height: 100%;
+                ${isDesktop ? 'flex: 1; min-height: 0;' : 'height: 100%;'}
                 background-color: ${config.backgroundColor};
                 border-radius: ${Math.max(0, config.borderRadius - 4)}px;
                 position: relative;
@@ -190,7 +195,8 @@ export class PlatformManager {
             }
 
             .content-area {
-                height: calc(100% - ${config.statusBarHeight + config.navigationBarHeight}px);
+                ${isDesktop ? 'flex: 1; min-height: 0;' : `height: calc(100% - ${config.statusBarHeight + config.navigationBarHeight}px);`}
+                width: 100%;
                 overflow: ${isDesktop ? 'visible' : 'auto'};
                 background-color: ${this.getContentBackgroundColor(config.name)};
             }
@@ -212,38 +218,38 @@ export class PlatformManager {
             .platform-selector {
                 display: flex;
                 gap: 8px;
-                margin-bottom: 16px;
+                margin: 0;
                 flex-wrap: wrap;
             }
 
             .platform-btn {
-                padding: 8px 16px;
-                border: 2px solid #e0e0e0;
-                border-radius: 8px;
-                background: white;
+                padding: 6px 12px;
+                border: 1px solid #3e3e42;
+                border-radius: 6px;
+                background: #2d2d30;
+                color: #cccccc;
                 cursor: pointer;
-                transition: all 0.2s ease;
-                font-size: 14px;
+                transition: all 0.15s ease;
+                font-size: 12px;
                 display: flex;
                 align-items: center;
-                gap: 6px;
+                gap: 5px;
+                white-space: nowrap;
             }
 
             .platform-btn:hover {
                 border-color: #007acc;
-                background: #f0f8ff;
+                background: #1e3a5f;
+                color: #ffffff;
             }
 
             .platform-btn.active {
                 border-color: #007acc;
                 background: #007acc;
-                color: white;
+                color: #ffffff;
+                font-weight: 600;
             }
 
-            .device-wrapper {
-                transition: transform 0.3s ease;
-                transform-origin: center top;
-            }
         `;
   }
 
@@ -304,11 +310,11 @@ export class PlatformManager {
     switch (config.name) {
       case 'Windows':
         return `
-                    <div class="nav-title">MAUI App</div>
-                    <div class="nav-controls">
-                        <button class="nav-btn">−</button>
-                        <button class="nav-btn">□</button>
-                        <button class="nav-btn">×</button>
+                    <div style="display:flex;align-items:center;width:100%;padding:0 8px;height:32px;background:#1f1f1f;border-bottom:1px solid #333">
+                        <span style="color:#888;font-size:11px;font-family:Segoe UI,sans-serif;flex:1">MAUI App</span>
+                        <span style="color:#888;font-size:16px;padding:0 8px;cursor:default">─</span>
+                        <span style="color:#888;font-size:13px;padding:0 8px;cursor:default">⬜</span>
+                        <span style="color:#888;font-size:14px;padding:0 8px;cursor:default">✕</span>
                     </div>
                 `;
       case 'macOS':

@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { DocumentTemplate } from './templateManager';
 
 export interface ElementProperty {
     key: string;
@@ -33,6 +34,7 @@ export class MauiPropertiesProvider implements vscode.TreeDataProvider<PropertyT
     private _selectedElement: XamlElement | undefined;
     private _elements: XamlElement[] = [];
     private _templates: TemplateItem[] = [];
+    private _documentTemplates: DocumentTemplate[] = [];
     private _extensionUri: vscode.Uri;
     private _showAllFlat: boolean = true;
     private _itemCache: Map<string, PropertyTreeItem> = new Map();
@@ -70,6 +72,11 @@ export class MauiPropertiesProvider implements vscode.TreeDataProvider<PropertyT
 
     setTemplates(templates: TemplateItem[]): void {
         this._templates = templates || [];
+        this.refresh();
+    }
+
+    setDocumentTemplates(templates: DocumentTemplate[]): void {
+        this._documentTemplates = templates || [];
         this.refresh();
     }
 
@@ -151,16 +158,34 @@ export class MauiPropertiesProvider implements vscode.TreeDataProvider<PropertyT
 
     private _getTemplatesRoot(): Thenable<PropertyTreeItem[]> {
         const items: PropertyTreeItem[] = [];
-        if (!this._templates.length) {
+
+        // Snippet templates
+        if (this._templates.length) {
+            for (const tpl of this._templates) {
+                const item = new PropertyTreeItem(tpl.name, 'template', vscode.TreeItemCollapsibleState.None, 'fas fa-square', tpl.id);
+                item.description = tpl.description || tpl.category;
+                item.command = { command: 'mauiTemplates.insertTemplate', title: 'Vstavi template', arguments: [tpl] };
+                items.push(item);
+            }
+        }
+
+        // Document templates
+        if (this._documentTemplates.length) {
+            const separator = new PropertyTreeItem('\u2500\u2500 Dokumentne predloge \u2500\u2500', 'info', vscode.TreeItemCollapsibleState.None, 'fas fa-file');
+            items.push(separator);
+            for (const dtpl of this._documentTemplates) {
+                const icon = dtpl.language === 'csharp' ? 'fas fa-hashtag' : 'fas fa-file';
+                const item = new PropertyTreeItem(`\uD83D\uDCC4 ${dtpl.name}`, 'doc-template', vscode.TreeItemCollapsibleState.None, icon, dtpl.id);
+                item.description = dtpl.description || dtpl.category;
+                item.command = { command: 'mauiTemplates.scaffoldDocument', title: 'Ustvari dokument', arguments: [dtpl] };
+                items.push(item);
+            }
+        }
+
+        if (!items.length) {
             items.push(new PropertyTreeItem('Ni definiranih template-ov', 'info', vscode.TreeItemCollapsibleState.None, 'fas fa-info-circle'));
-            return Promise.resolve(items);
         }
-        for (const tpl of this._templates) {
-            const item = new PropertyTreeItem(tpl.name, 'template', vscode.TreeItemCollapsibleState.None, 'fas fa-square', tpl.id);
-            item.description = tpl.description || tpl.category;
-            item.command = { command: 'mauiTemplates.insertTemplate', title: 'Vstavi template', arguments: [tpl] };
-            items.push(item);
-        }
+
         return Promise.resolve(items);
     }
 

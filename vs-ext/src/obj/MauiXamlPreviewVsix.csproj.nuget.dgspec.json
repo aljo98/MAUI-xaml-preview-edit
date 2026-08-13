@@ -1,17 +1,17 @@
 {
   "format": 1,
   "restore": {
-    "H:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj": {}
+    "F:\\AF\\db_procesing_postregDB\\archive\\legacy_tools\\tools\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj": {}
   },
   "projects": {
-    "H:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj": {
+    "F:\\AF\\db_procesing_postregDB\\archive\\legacy_tools\\tools\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj": {
       "version": "1.0.0",
       "restore": {
-        "projectUniqueName": "H:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj",
+        "projectUniqueName": "F:\\AF\\db_procesing_postregDB\\archive\\legacy_tools\\tools\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj",
         "projectName": "MauiXamlPreviewVsix",
-        "projectPath": "H:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj",
+        "projectPath": "F:\\AF\\db_procesing_postregDB\\archive\\legacy_tools\\tools\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\MauiXamlPreviewVsix.csproj",
         "packagesPath": "C:\\Users\\fajdi\\.nuget\\packages\\",
-        "outputPath": "H:\\AF\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\obj\\",
+        "outputPath": "F:\\AF\\db_procesing_postregDB\\archive\\legacy_tools\\tools\\maui-xaml-preview\\MAUI-xaml-preview-edit\\vs-ext\\src\\obj\\",
         "projectStyle": "PackageReference",
         "skipContentFileWrite": true,
         "UsingMicrosoftNETSdk": false,

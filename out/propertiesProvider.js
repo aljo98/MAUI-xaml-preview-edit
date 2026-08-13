@@ -41,6 +41,7 @@ class MauiPropertiesProvider {
         this.onDidChangeTreeData = this._onDidChangeTreeData.event;
         this._elements = [];
         this._templates = [];
+        this._documentTemplates = [];
         this._showAllFlat = true;
         this._itemCache = new Map();
         this._extraPropertySuggestions = [
@@ -70,6 +71,10 @@ class MauiPropertiesProvider {
     }
     setTemplates(templates) {
         this._templates = templates || [];
+        this.refresh();
+    }
+    setDocumentTemplates(templates) {
+        this._documentTemplates = templates || [];
         this.refresh();
     }
     setMode(mode) {
@@ -138,15 +143,29 @@ class MauiPropertiesProvider {
     }
     _getTemplatesRoot() {
         const items = [];
-        if (!this._templates.length) {
-            items.push(new PropertyTreeItem('Ni definiranih template-ov', 'info', vscode.TreeItemCollapsibleState.None, 'fas fa-info-circle'));
-            return Promise.resolve(items);
+        // Snippet templates
+        if (this._templates.length) {
+            for (const tpl of this._templates) {
+                const item = new PropertyTreeItem(tpl.name, 'template', vscode.TreeItemCollapsibleState.None, 'fas fa-square', tpl.id);
+                item.description = tpl.description || tpl.category;
+                item.command = { command: 'mauiTemplates.insertTemplate', title: 'Vstavi template', arguments: [tpl] };
+                items.push(item);
+            }
         }
-        for (const tpl of this._templates) {
-            const item = new PropertyTreeItem(tpl.name, 'template', vscode.TreeItemCollapsibleState.None, 'fas fa-square', tpl.id);
-            item.description = tpl.description || tpl.category;
-            item.command = { command: 'mauiTemplates.insertTemplate', title: 'Vstavi template', arguments: [tpl] };
-            items.push(item);
+        // Document templates
+        if (this._documentTemplates.length) {
+            const separator = new PropertyTreeItem('\u2500\u2500 Dokumentne predloge \u2500\u2500', 'info', vscode.TreeItemCollapsibleState.None, 'fas fa-file');
+            items.push(separator);
+            for (const dtpl of this._documentTemplates) {
+                const icon = dtpl.language === 'csharp' ? 'fas fa-hashtag' : 'fas fa-file';
+                const item = new PropertyTreeItem(`\uD83D\uDCC4 ${dtpl.name}`, 'doc-template', vscode.TreeItemCollapsibleState.None, icon, dtpl.id);
+                item.description = dtpl.description || dtpl.category;
+                item.command = { command: 'mauiTemplates.scaffoldDocument', title: 'Ustvari dokument', arguments: [dtpl] };
+                items.push(item);
+            }
+        }
+        if (!items.length) {
+            items.push(new PropertyTreeItem('Ni definiranih template-ov', 'info', vscode.TreeItemCollapsibleState.None, 'fas fa-info-circle'));
         }
         return Promise.resolve(items);
     }

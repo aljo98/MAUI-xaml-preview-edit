@@ -21,7 +21,12 @@ export interface StyleResource {
 export class ResourceManager {
   private resourceCache: Map<string, ParsedResource[]> = new Map();
   private styleCache: Map<string, StyleResource[]> = new Map();
+  private fileMtimeCache: Map<string, number> = new Map();
+  private fileWatchers: Map<string, vscode.FileSystemWatcher> = new Map();
   private xmlParser: XMLParser;
+
+  /** Called when a watched file changes — allows previewProvider to trigger re-render */
+  public onResourceFileChanged?: () => void;
 
   constructor() {
     this.xmlParser = new XMLParser({
@@ -76,11 +81,53 @@ export class ResourceManager {
     }
   }
 
+  private watchFile(filePath: string): void {
+    if (this.fileWatchers.has(filePath)) return;
+    try {
+      const watcher = vscode.workspace.createFileSystemWatcher(
+        new vscode.RelativePattern(path.dirname(filePath), path.basename(filePath))
+      );
+      const invalidate = () => {
+        this.resourceCache.delete(filePath);
+        this.styleCache.delete(filePath);
+        this.fileMtimeCache.delete(filePath);
+        console.log(`[ResourceManager] Cache invalidated (file changed): ${path.basename(filePath)}`);
+        this.onResourceFileChanged?.();
+      };
+      watcher.onDidChange(invalidate);
+      watcher.onDidDelete(invalidate);
+      this.fileWatchers.set(filePath, watcher);
+      console.log(`[ResourceManager] Watching: ${path.basename(filePath)}`);
+    } catch (e) {
+      console.warn(`[ResourceManager] Could not watch ${filePath}:`, e);
+    }
+  }
+
+  public dispose(): void {
+    for (const w of this.fileWatchers.values()) w.dispose();
+    this.fileWatchers.clear();
+    this.clearCache();
+    console.log('[ResourceManager] Disposed');
+  }
+
   private async loadResourcesFromFile(filePath: string): Promise<{ resources: ParsedResource[], styles: StyleResource[] }> {
-    if (this.resourceCache.has(filePath)) {
-      const cachedResources = this.resourceCache.get(filePath) || [];
-      const cachedStyles = this.styleCache.get(filePath) || [];
-      return { resources: cachedResources, styles: cachedStyles };
+    // Check mtime for cache freshness (secondary guard beside file watcher)
+    if (this.resourceCache.has(filePath) && fs.existsSync(filePath)) {
+      const currentMtime = fs.statSync(filePath).mtimeMs;
+      if (currentMtime === this.fileMtimeCache.get(filePath)) {
+        return {
+          resources: this.resourceCache.get(filePath) || [],
+          styles: this.styleCache.get(filePath) || []
+        };
+      }
+      // File changed — invalidate
+      this.resourceCache.delete(filePath);
+      this.styleCache.delete(filePath);
+    } else if (this.resourceCache.has(filePath)) {
+      return {
+        resources: this.resourceCache.get(filePath) || [],
+        styles: this.styleCache.get(filePath) || []
+      };
     }
 
     try {
@@ -95,9 +142,11 @@ export class ResourceManager {
       const resources = this.extractResources(parsed);
       const styles = this.extractStyles(parsed);
 
-      // Cache the results
+      // Cache the results + mtime
       this.resourceCache.set(filePath, resources);
       this.styleCache.set(filePath, styles);
+      this.fileMtimeCache.set(filePath, fs.statSync(filePath).mtimeMs);
+      this.watchFile(filePath);
 
       console.log(`[ResourceManager] Loaded from ${path.basename(filePath)}: ${resources.length} resources, ${styles.length} styles`);
       return { resources, styles };
